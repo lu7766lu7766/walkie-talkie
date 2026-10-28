@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#1f2330" />
+    <meta name="description" content="按住說話，聲音即時傳給頻道裡的每個人。" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="對講機" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <title>對講機</title>
+  </head>
+  <body>
+    <main id="join-view" class="view join">
+      <img class="logo" src="/icons/icon.svg" alt="" width="96" height="96" />
+      <h1>對講機</h1>
+      <form id="join-form" class="card" autocomplete="on">
+        <label>暱稱<input id="name" name="nickname" required maxlength="24" placeholder="例如：小明" /></label>
+        <label>頻道<input id="channel" name="channel" required maxlength="64" placeholder="例如：team-a" autocapitalize="off" /></label>
+        <label>頻道密碼（選填）<input id="password" type="password" autocomplete="off" placeholder="同頻道同密碼才聽得到彼此" /></label>
+        <button type="submit" class="primary">進入頻道</button>
+      </form>
+      <p id="join-error" class="error" hidden></p>
+      <button id="install-btn" class="ghost" hidden>📲 安裝 App</button>
+      <p id="ios-install-hint" class="hint" hidden>iPhone／iPad：點 Safari 的「分享」→「加入主畫面」即可安裝成 App。</p>
+    </main>
+
+    <main id="room-view" class="view room" hidden>
+      <header class="topbar">
+        <span id="status-dot" class="dot"></span>
+        <span id="room-name" class="room-name"></span>
+        <button id="share-btn" class="ghost small">分享</button>
+        <button id="leave-btn" class="ghost small">離開</button>
+      </header>
+
+      <section id="speaker-banner" class="banner" data-state="offline" aria-live="polite">連線中…</section>
+
+      <div class="ptt-wrap">
+        <button id="ptt" class="ptt" data-state="offline" aria-label="發話鍵">
+          <span id="ptt-label">按住說話</span>
+        </button>
+      </div>
+
+      <details class="card settings">
+        <summary>⚙️ 發話設定</summary>
+        <fieldset>
+          <legend>發話方式</legend>
+          <label class="row"><input type="radio" name="mode" value="hold" /> 按住說話、放開結束</label>
+          <label class="row"><input type="radio" name="mode" value="toggle" /> 按一下開始、再按一下結束</label>
+        </fieldset>
+        <div class="row between">
+          <span>鍵盤／藍牙 PTT 按鈕：<kbd id="key-name">空白鍵</kbd></span>
+          <button id="bind-key" class="ghost small">重新綁定</button>
+        </div>
+        <label class="row">
+          <input id="headset" type="checkbox" />
+          <span>耳機／藍牙耳機的播放鍵：按一下開始、再按一下結束</span>
+        </label>
+        <label class="row"><input id="beeps" type="checkbox" /> 提示音（開始、結束、忙線）</label>
+        <label class="row">音量 <input id="volume" type="range" min="0" max="2" step="0.05" /></label>
+      </details>
+
+      <section class="card">
+        <h2>頻道成員（<span id="member-count">0</span>）</h2>
+        <ul id="members" class="members"></ul>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" hidden></div>
+    <script type="module" src="/src/client/main.ts"></script>
+  </body>
+</html>

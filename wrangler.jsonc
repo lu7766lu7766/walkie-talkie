@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "walkie-talkie",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "not_found_handling": "single-page-application",
+    // WebSocket 與 API 一律先交給 Worker 處理，其餘走靜態資源
+    "run_worker_first": ["/api/*"]
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "CHANNEL", "class_name": "Channel" }]
+  },
+  // SQLite 型 Durable Object 才能在 Workers 免費方案使用
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Channel"] }],
+  "observability": { "enabled": true }
+}
