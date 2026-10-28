@@ -8,11 +8,12 @@ import {
   bindScreenButton,
   captureKey,
   keyLabel,
+  setMediaStatus,
   type PttHandlers,
   type PttSource,
 } from './ptt-inputs';
 import { normalizeChannel, roomIdFor } from './room-id';
-import { setupPwa } from './pwa';
+import { isIos, setupPwa } from './pwa';
 
 /** 前端與後端分開部署時（例如前端放 Vercel），用這個指到 Worker 的網址 */
 const API_ORIGIN: string = import.meta.env.VITE_API_ORIGIN || location.origin;
@@ -30,6 +31,10 @@ interface Settings {
   headset: boolean;
   volume: number;
   beeps: boolean;
+  /** 經由媒體元素播放，讓切到背景、鎖屏後仍能收聽 */
+  background: boolean;
+  /** 保持螢幕常亮（iPhone 背景執行受限，預設開啟） */
+  keepScreenOn: boolean;
 }
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -42,6 +47,8 @@ const settings: Settings = {
   headset: true,
   volume: 1,
   beeps: true,
+  background: true,
+  keepScreenOn: isIos(),
   ...JSON.parse(localStorage.getItem('wt-settings') ?? '{}'),
 };
 const saveSettings = () => localStorage.setItem('wt-settings', JSON.stringify(settings));
@@ -105,6 +112,7 @@ class Room implements PttHandlers {
   private talkStarted = 0;
   private talkTimer?: ReturnType<typeof setInterval>;
   private wakeLock?: WakeLockSentinel;
+  private mediaStatus = '';
 
   constructor(
     private readonly engine: AudioEngine,
@@ -126,7 +134,7 @@ class Room implements PttHandlers {
     if (settings.headset) this.headset.enable();
     let roomId: string;
     try {
-      [roomId] = await Promise.all([this.roomId, this.engine.start()]);
+      [roomId] = await Promise.all([this.roomId, this.engine.start(settings.background)]);
     } catch (err) {
       this.headset.disable();
       this.engine.stop();
@@ -165,7 +173,7 @@ class Room implements PttHandlers {
       // 任何互動都順便喚醒被系統暫停的 AudioContext（iOS 來電、切到背景後常見）
       listen(window, 'pointerdown', () => this.engine.resumeIfNeeded(), true),
       listen(window, 'keydown', () => this.engine.resumeIfNeeded(), true),
-      listen(document, 'visibilitychange', () => this.keepAwake()),
+      listen(document, 'visibilitychange', () => this.onVisibilityChange()),
       ...this.bindSettings(),
     );
     void this.keepAwake();
@@ -178,7 +186,8 @@ class Room implements PttHandlers {
     this.headset.disable();
     this.engine.stop();
     clearInterval(this.talkTimer);
-    void this.wakeLock?.release().catch(() => {});
+    void this.releaseWakeLock();
+    if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
     $('room-view').hidden = true;
     $('join-view').hidden = false;
     if (message) {
@@ -331,6 +340,7 @@ class Room implements PttHandlers {
     }
     banner.textContent = text;
     banner.dataset.state = state;
+    this.updateMediaStatus(state);
     ptt.dataset.state = state;
     label.textContent =
       state === 'talking'
@@ -355,11 +365,43 @@ class Room implements PttHandlers {
     );
   }
 
+  /** 鎖定畫面／通知列顯示目前狀態（只在狀態改變時更新，避免每 250 ms 重設） */
+  private updateMediaStatus(state: string) {
+    const title =
+      state === 'offline'
+        ? '連線中…'
+        : state === 'talking'
+          ? '🔴 你正在發話'
+          : state === 'requesting'
+            ? '請求發話中…'
+            : state === 'receiving'
+              ? `🔊 ${this.speaker!.name} 正在說話`
+              : '📻 頻道待命中';
+    const detail = `頻道 ${normalizeChannel(this.channel)}・${this.members.length} 人`;
+    if (title + detail === this.mediaStatus) return;
+    this.mediaStatus = title + detail;
+    setMediaStatus(title, detail);
+  }
+
+  private onVisibilityChange() {
+    if (document.visibilityState !== 'visible') return;
+    // 回到前景：喚醒被系統暫停的音訊、iOS 會關掉的麥克風、耳機按鍵與螢幕常亮
+    this.engine.resumeIfNeeded();
+    void this.engine.ensureMic();
+    this.headset.keepAlive();
+    void this.keepAwake();
+  }
+
   private bindSettings(): (() => void)[] {
     const modeInputs = document.querySelectorAll<HTMLInputElement>('input[name="mode"]');
     modeInputs.forEach((r) => (r.checked = r.value === settings.mode));
     const headset = $<HTMLInputElement>('headset');
     const beeps = $<HTMLInputElement>('beeps');
+    const background = $<HTMLInputElement>('background');
+    const keepScreenOn = $<HTMLInputElement>('keep-screen-on');
+    background.checked = settings.background;
+    keepScreenOn.checked = settings.keepScreenOn;
+    keepScreenOn.disabled = !('wakeLock' in navigator);
     const volume = $<HTMLInputElement>('volume');
     const bindKey = $<HTMLButtonElement>('bind-key');
     headset.checked = settings.headset;
@@ -382,6 +424,16 @@ class Room implements PttHandlers {
         saveSettings();
         if (headset.checked) this.headset.enable();
         else this.headset.disable();
+      }),
+      listen(background, 'change', () => {
+        settings.background = background.checked;
+        saveSettings();
+        this.engine.setBackground(background.checked);
+      }),
+      listen(keepScreenOn, 'change', () => {
+        settings.keepScreenOn = keepScreenOn.checked;
+        saveSettings();
+        void (keepScreenOn.checked ? this.keepAwake() : this.releaseWakeLock());
       }),
       listen(beeps, 'change', () => {
         settings.beeps = this.engine.beeps = beeps.checked;
@@ -421,14 +473,20 @@ class Room implements PttHandlers {
     }
   }
 
-  /** 保持螢幕常亮：網頁被鎖屏或切到背景後，行動瀏覽器會停掉麥克風與網路 */
+  /** 保持螢幕常亮：iPhone 鎖屏後無法發話、收聽也不保證持續，開著最穩定 */
   private async keepAwake() {
-    if (document.visibilityState !== 'visible' || !('wakeLock' in navigator)) return;
+    if (!settings.keepScreenOn || document.visibilityState !== 'visible' || !('wakeLock' in navigator)) return;
+    if (this.wakeLock && !this.wakeLock.released) return;
     try {
       this.wakeLock = await navigator.wakeLock.request('screen');
     } catch {
       // 省電模式等情況會被拒絕
     }
+  }
+
+  private async releaseWakeLock() {
+    await this.wakeLock?.release().catch(() => {});
+    this.wakeLock = undefined;
   }
 }
 

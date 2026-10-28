@@ -13,7 +13,16 @@ export class AudioEngine {
   readonly ctx = new AudioContext({ latencyHint: 'interactive' });
   private readonly master = this.ctx.createGain();
   private readonly rx = this.ctx.createGain();
+  /**
+   * 背景播放：把所有聲音導進一個 <audio> 元素再播出。
+   * 系統把它視為「正在播放媒體」，切到背景或鎖屏時不會暫停網頁（同音樂 App），
+   * iOS 也會因此保持 AudioContext 運作，且不受靜音鍵影響。
+   */
+  private readonly sink = this.ctx.createMediaStreamDestination();
+  private readonly output = new Audio();
+  private background = false;
   private capture?: AudioWorkletNode;
+  private source?: MediaStreamAudioSourceNode;
   private mic?: MediaStream;
   private playHead = 0;
   private stopWaiter?: () => void;
@@ -26,25 +35,27 @@ export class AudioEngine {
 
   constructor() {
     this.rx.connect(this.master);
-    this.master.connect(this.ctx.destination);
+    this.output.srcObject = this.sink.stream;
+    this.output.setAttribute('playsinline', '');
+    // 被系統打斷（來電、其他 App 播音樂）結束後，盡量自己恢復
+    this.ctx.onstatechange = () => {
+      if (this.ctx.state === 'suspended' || this.ctx.state === ('interrupted' as AudioContextState)) {
+        setTimeout(() => this.resumeIfNeeded(), 500);
+      }
+    };
   }
 
   /** 必須在使用者手勢（點擊）中呼叫：解鎖播放並取得麥克風權限。 */
-  async start() {
+  async start(background: boolean) {
     // iOS Safari：讓網頁聲音不受靜音鍵影響，並允許同時錄放
     const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
     if (session) session.type = 'play-and-record';
 
-    const resumed = this.ctx.resume(); // 一定要在手勢的同步階段呼叫
-    await this.ctx.audioWorklet.addModule(workletUrl);
-    this.mic = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-    });
-    await resumed;
-    // iOS 取得麥克風時會切換 audio session，AudioContext 可能被中斷，再喚醒一次
-    if (this.ctx.state !== 'running') await this.ctx.resume().catch(() => {});
+    // 以下兩個都一定要在手勢的同步階段呼叫，否則會被自動播放限制擋下
+    const resumed = this.ctx.resume();
+    this.setBackground(background);
 
-    const source = this.ctx.createMediaStreamSource(this.mic);
+    await this.ctx.audioWorklet.addModule(workletUrl);
     this.capture = new AudioWorkletNode(this.ctx, 'capture', {
       numberOfInputs: 1,
       numberOfOutputs: 1,
@@ -56,18 +67,61 @@ export class AudioEngine {
       else if (e.data.done) this.stopWaiter?.();
     };
     // 輸出是靜音，只是為了讓節點持續被音訊圖驅動
-    source.connect(this.capture).connect(this.ctx.destination);
+    this.capture.connect(this.ctx.destination);
+
+    await this.openMic();
+    await resumed;
+    // iOS 取得麥克風時會切換 audio session，AudioContext 可能被中斷，再喚醒一次
+    if (this.ctx.state !== 'running') await this.ctx.resume().catch(() => {});
   }
 
   stop() {
     this.mic?.getTracks().forEach((t) => t.stop());
     this.capture?.disconnect();
+    this.output.pause();
+    this.output.srcObject = null;
     void this.ctx.close();
   }
 
-  /** 網頁從背景回來、或 iOS 被電話打斷後，在下一次互動時喚醒 */
+  /** 切換背景播放。開啟時聲音經由 <audio> 元素輸出，關閉時直接輸出到喇叭。 */
+  setBackground(on: boolean) {
+    this.background = on;
+    this.master.disconnect();
+    if (on) {
+      this.master.connect(this.sink);
+      void this.output.play().catch(() => {});
+    } else {
+      this.master.connect(this.ctx.destination);
+      this.output.pause();
+    }
+  }
+
+  /** 網頁從背景回來、或 iOS 被電話打斷後喚醒音訊 */
   resumeIfNeeded() {
-    if (this.ctx.state !== 'running' && this.ctx.state !== 'closed') void this.ctx.resume();
+    if (this.ctx.state === 'closed') return;
+    if (this.ctx.state !== 'running') void this.ctx.resume().catch(() => {});
+    if (this.background && this.output.paused) void this.output.play().catch(() => {});
+  }
+
+  /** iOS 在背景時會關掉麥克風，回到前景後重新取得 */
+  async ensureMic() {
+    if (this.mic?.getAudioTracks().some((t) => t.readyState === 'live')) return;
+    try {
+      await this.openMic();
+    } catch {
+      // 權限被收回等情況，等下次互動再試
+    }
+  }
+
+  private async openMic() {
+    const mic = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+    });
+    this.mic?.getTracks().forEach((t) => t.stop());
+    this.source?.disconnect();
+    this.mic = mic;
+    this.source = this.ctx.createMediaStreamSource(mic);
+    this.source.connect(this.capture!);
   }
 
   startCapture() {

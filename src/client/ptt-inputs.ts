@@ -122,11 +122,6 @@ export class HeadsetButton {
     if (!this.supported || this.enabled) return;
     this.enabled = true;
     void this.audio.play().catch(() => {});
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: '對講機待命中',
-      artist: '按耳機播放鍵開始／結束發話',
-      artwork: [{ src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' }],
-    });
     navigator.mediaSession.playbackState = 'playing';
     for (const action of HEADSET_ACTIONS) {
       try {
@@ -155,6 +150,22 @@ export class HeadsetButton {
     }
     navigator.mediaSession.playbackState = 'none';
   }
+
+  /** 從背景回到前景時，確保無聲音訊還在播（否則收不到耳機按鍵） */
+  keepAlive() {
+    if (this.enabled && this.audio.paused) void this.audio.play().catch(() => {});
+  }
+}
+
+/** 更新鎖定畫面／通知列的媒體資訊，讓使用者不打開 App 也知道誰在說話。 */
+export function setMediaStatus(title: string, detail: string) {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title,
+    artist: detail,
+    album: '對講機',
+    artwork: [{ src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' }],
+  });
 }
 
 /** 產生一秒鐘的 8 kHz 8-bit 無聲 WAV */

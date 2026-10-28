@@ -1,8 +1,8 @@
 import { CLOSE_REPLACED, type ClientMessage, type ServerMessage } from '../shared/protocol';
 
 const PING_INTERVAL_MS = 15_000;
-/** 超過這麼久沒收到任何東西（含 pong）就當作斷線，主動重連 */
-const DEAD_AFTER_MS = 40_000;
+/** 送出 ping 後這麼久沒收到任何東西就當作斷線，主動重連 */
+const PONG_TIMEOUT_MS = 10_000;
 const MAX_BACKOFF_MS = 10_000;
 /** 送出緩衝積太多代表上傳塞車，丟掉語音框，避免延遲爆增 */
 const MAX_BUFFERED_BYTES = 64 * 1024;
@@ -20,6 +20,8 @@ export class Connection {
   private stopped = false;
   private attempt = 0;
   private lastSeen = 0;
+  /** 尚未收到回應的 ping 送出時間；0 表示沒有在等 */
+  private pingSentAt = 0;
   private pingTimer?: ReturnType<typeof setInterval>;
   private retryTimer?: ReturnType<typeof setTimeout>;
 
@@ -44,14 +46,22 @@ export class Connection {
     ws.onopen = () => {
       this.attempt = 0;
       this.lastSeen = Date.now();
+      this.pingSentAt = 0;
+      // 背景分頁的計時器會被瀏覽器延後（最慢可能一分鐘一次），
+      // 所以只判斷「ping 送出後多久沒回應」，不用「多久沒收到訊息」，避免在背景誤判斷線
       this.pingTimer = setInterval(() => {
-        if (Date.now() - this.lastSeen > DEAD_AFTER_MS) this.drop('retrying');
-        else ws.send('ping');
+        if (this.pingSentAt && Date.now() - this.pingSentAt > PONG_TIMEOUT_MS) {
+          this.drop('retrying');
+          return;
+        }
+        if (!this.pingSentAt) this.pingSentAt = Date.now();
+        ws.send('ping');
       }, PING_INTERVAL_MS);
       this.h.onOpen();
     };
     ws.onmessage = (e) => {
       this.lastSeen = Date.now();
+      this.pingSentAt = 0;
       if (typeof e.data !== 'string') this.h.onAudio(e.data);
       else if (e.data !== 'pong') this.h.onMessage(JSON.parse(e.data));
     };
@@ -99,8 +109,15 @@ export class Connection {
 
   private onVisible = () => {
     if (document.visibilityState !== 'visible') return;
-    // 手機鎖屏回來，連線常常已經默默死掉
-    if (this.ws && Date.now() - this.lastSeen > PING_INTERVAL_MS * 2) this.drop('retrying');
+    // 手機鎖屏回來，連線可能已經默默死掉：立刻 ping 一次，逾時就重連
+    if (this.ws && Date.now() - this.lastSeen > PING_INTERVAL_MS) {
+      const ws = this.ws;
+      if (ws.readyState === WebSocket.OPEN) ws.send('ping');
+      const sent = Date.now();
+      setTimeout(() => {
+        if (this.ws === ws && this.lastSeen < sent) this.drop('retrying');
+      }, PONG_TIMEOUT_MS);
+    }
     this.reconnectNow();
   };
 }

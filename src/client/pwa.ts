@@ -33,7 +33,12 @@ export function setupPwa() {
   addEventListener('appinstalled', () => (button.hidden = true));
 
   // iOS Safari 沒有安裝提示事件，只能教使用者手動加入主畫面
-  const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  if (isIos) iosHint.hidden = false;
+  if (isIos()) iosHint.hidden = false;
+}
+
+export function isIos(): boolean {
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  );
 }

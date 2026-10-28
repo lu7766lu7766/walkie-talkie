@@ -60,6 +60,15 @@
           <input id="headset" type="checkbox" />
           <span>耳機／藍牙耳機的播放鍵：按一下開始、再按一下結束</span>
         </label>
+        <label class="row">
+          <input id="background" type="checkbox" />
+          <span>背景播放：切到其他 App 或鎖屏時繼續收聽</span>
+        </label>
+        <label class="row"><input id="keep-screen-on" type="checkbox" /> 保持螢幕常亮</label>
+        <p class="hint">
+          Android：背景與鎖屏時可收聽，也能用耳機／藍牙按鍵發話。<br />
+          iPhone：背景時系統會關閉麥克風，只能收聽，且收聽依 iOS 版本可能被暫停；需要長時間值勤請開啟「保持螢幕常亮」。
+        </p>
         <label class="row"><input id="beeps" type="checkbox" /> 提示音（開始、結束、忙線）</label>
         <label class="row">音量 <input id="volume" type="range" min="0" max="2" step="0.05" /></label>
       </details>
