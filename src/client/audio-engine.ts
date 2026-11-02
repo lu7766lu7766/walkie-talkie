@@ -1,6 +1,18 @@
 import { AUDIO_SAMPLE_RATE, CODEC_MULAW_16K } from '../shared/protocol';
 import { MULAW_TO_FLOAT } from '../shared/mulaw';
 import workletUrl from './capture.worklet.ts?worker&url';
+import rnnoiseUrl from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url';
+import rnnoiseSimdUrl from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url';
+
+/** 傳給音訊執行緒的噪音抑制設定 */
+export interface NoiseOptions {
+  /** AI 降噪（RNNoise） */
+  denoise: boolean;
+  /** 只傳送人聲：判斷不是人聲時靜音 */
+  gate: boolean;
+  /** 人聲機率門檻 0~1（越高越嚴格） */
+  voiceThreshold: number;
+}
 
 /** 收到第一個框後先緩衝多久再開始播，吸收網路抖動。 */
 const JITTER_BUFFER_S = 0.12;
@@ -29,9 +41,11 @@ export class AudioEngine {
 
   /**
    * 每 40 ms 產生一個語音框就呼叫（已含 codec 標頭，可直接送出）。
-   * level 是峰值（給 UI 動畫），rms 是濾掉低頻後的音量（給語音偵測）。
+   * level 是峰值（給 UI 動畫），rms 是濾掉低頻後的音量，prob 是 AI 判斷的人聲機率（-1 表示沒有 AI 判斷）。
    */
-  onFrame: (frame: ArrayBuffer, level: number, rms: number) => void = () => {};
+  onFrame: (frame: ArrayBuffer, level: number, rms: number, prob: number) => void = () => {};
+  /** AI 降噪是否載入成功 */
+  aiReady = false;
   /** 播放端音量（0~1），給 UI 做音量動畫 */
   onRxLevel: (level: number) => void = () => {};
   beeps = true;
@@ -49,7 +63,7 @@ export class AudioEngine {
   }
 
   /** 必須在使用者手勢（點擊）中呼叫：解鎖播放並取得麥克風權限。 */
-  async start(background: boolean) {
+  async start(background: boolean, noise: NoiseOptions) {
     // iOS Safari：讓網頁聲音不受靜音鍵影響，並允許同時錄放
     const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
     if (session) session.type = 'play-and-record';
@@ -58,19 +72,30 @@ export class AudioEngine {
     const resumed = this.ctx.resume();
     this.setBackground(background);
 
-    await this.ctx.audioWorklet.addModule(workletUrl);
+    const [wasm] = await Promise.all([loadRnnoise(), this.ctx.audioWorklet.addModule(workletUrl)]);
     this.capture = new AudioWorkletNode(this.ctx, 'capture', {
       numberOfInputs: 1,
       numberOfOutputs: 1,
       channelCount: 1,
       channelCountMode: 'explicit',
+      processorOptions: { ...noise, wasm },
     });
-    this.capture.port.onmessage = (e: MessageEvent) => this.onFrame(e.data.frame, e.data.level, e.data.rms);
+    // 音訊執行緒建立 RNNoise 後會回報是否成功
+    const ready = new Promise<void>((resolve) => {
+      setTimeout(resolve, 2000);
+      this.capture!.port.onmessage = (e: MessageEvent) => {
+        if (e.data.frame) this.onFrame(e.data.frame, e.data.level, e.data.rms, e.data.prob);
+        else if ('ready' in e.data) {
+          this.aiReady = e.data.ready;
+          resolve();
+        }
+      };
+    });
     // 輸出是靜音，只是為了讓節點持續被音訊圖驅動
     this.capture.connect(this.ctx.destination);
 
     await this.openMic();
-    await resumed;
+    await Promise.all([resumed, ready]);
     // iOS 取得麥克風時會切換 audio session，AudioContext 可能被中斷，再喚醒一次
     if (this.ctx.state !== 'running') await this.ctx.resume().catch(() => {});
   }
@@ -132,6 +157,10 @@ export class AudioEngine {
     return this.ctx.currentTime < Math.max(this.playHead, this.toneEnd) + 0.3;
   }
 
+  setNoise(noise: NoiseOptions) {
+    this.capture?.port.postMessage(noise);
+  }
+
   setVolume(v: number) {
     this.rx.gain.value = v;
   }
@@ -176,7 +205,7 @@ export class AudioEngine {
   roger() {
     this.tone([[1600, 60], [1200, 90]]);
   }
-  /** 頻道忙線 */
+  /** 房間忙線 */
   busy() {
     this.tone([[480, 120], [0, 70], [480, 120], [0, 70], [480, 120]]);
   }
@@ -203,3 +232,17 @@ export class AudioEngine {
     this.toneEnd = Math.max(this.toneEnd, t);
   }
 }
+
+/** 下載 RNNoise WASM（支援 SIMD 的瀏覽器用較快的版本）；失敗就不使用 AI 降噪 */
+async function loadRnnoise(): Promise<ArrayBuffer | null> {
+  try {
+    const res = await fetch(SIMD_SUPPORTED ? rnnoiseSimdUrl : rnnoiseUrl);
+    return res.ok ? await res.arrayBuffer() : null;
+  } catch {
+    return null;
+  }
+}
+
+const SIMD_SUPPORTED = WebAssembly.validate(
+  new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]),
+);

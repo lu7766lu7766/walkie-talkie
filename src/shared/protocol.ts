@@ -3,7 +3,7 @@
  *
  * 控制訊息走 WebSocket 文字框（JSON），語音走二進位框：
  *   [1 byte codec][payload...]
- * 伺服器不解碼語音，只把「目前持有發話權」者送來的二進位框原封不動轉發給頻道內其他人。
+ * 伺服器不解碼語音，只把「目前持有發話權」者送來的二進位框原封不動轉發給房間內其他人。
  */
 
 /** 傳輸取樣率：16 kHz 對語音已足夠清楚，頻寬只有 48 kHz 的三分之一。 */
@@ -16,9 +16,9 @@ export const CODEC_MULAW_16K = 1;
 /** 單一框上限，超過的直接丟棄，避免有人灌大封包。 */
 export const MAX_FRAME_BYTES = 4096;
 
-/** 單次發話上限，跟實體對講機一樣避免有人卡住頻道。 */
+/** 單次發話上限，跟實體對講機一樣避免有人卡住房間。 */
 export const MAX_TALK_MS = 60_000;
-/** 單一頻道人數上限。 */
+/** 單一房間人數上限。 */
 export const MAX_MEMBERS = 50;
 /** 自訂 close code：同一個 client id 從別處重新連線，舊連線被取代。 */
 export const CLOSE_REPLACED = 4000;
@@ -26,6 +26,12 @@ export const CLOSE_REPLACED = 4000;
 export interface Member {
   id: string;
   name: string;
+}
+
+/** GET /api/channel/:id/info 的回應 */
+export interface RoomInfo {
+  members: number;
+  speaking: boolean;
 }
 
 export type ClientMessage = { t: 'talk' } | { t: 'release' };

@@ -148,7 +148,7 @@ button:disabled {
   color: var(--danger);
 }
 
-/* ---------- 頻道頁 ---------- */
+/* ---------- 房間頁 ---------- */
 
 .room {
   min-height: 100dvh;
@@ -436,4 +436,147 @@ kbd {
   left: var(--threshold);
   width: 2px;
   background: var(--text);
+}
+
+/* ---------- 大廳與邀請頁 ---------- */
+
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.divider::before,
+.divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--panel-2);
+}
+
+.join-row {
+  display: flex;
+  gap: 8px;
+}
+
+.join-row input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 20px;
+  letter-spacing: 0.2em;
+  text-align: center;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 10px;
+  outline: none;
+}
+
+.recent {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.recent li {
+  display: flex;
+  background: var(--panel-2);
+  border-radius: 999px;
+}
+
+.chip {
+  padding: 8px 4px 8px 14px;
+  background: none;
+  font-size: 16px;
+  letter-spacing: 0.1em;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip-remove {
+  padding: 8px 12px 8px 6px;
+  background: none;
+  color: var(--muted);
+}
+
+.invite-title {
+  margin: 0;
+  color: var(--muted);
+}
+
+.invite-code {
+  margin: 0;
+  font-size: 44px;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+  font-variant-numeric: tabular-nums;
+}
+
+.room-name {
+  text-align: left;
+  background: none;
+  padding: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+#room-code {
+  letter-spacing: 0.08em;
+}
+
+/* ---------- 噪音抑制 ---------- */
+
+.slider {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.slider .between {
+  display: flex;
+  justify-content: space-between;
+}
+
+.slider output {
+  color: var(--teal);
+  font-variant-numeric: tabular-nums;
+}
+
+.meter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.meter-row .meter {
+  flex: 1;
+}
+
+.badge {
+  flex: none;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.badge.on {
+  background: var(--green);
+  color: #06232a;
+}
+
+input[type='range']:disabled,
+input[type='checkbox']:disabled + span {
+  opacity: 0.5;
+}
+
+.join-row input::placeholder {
+  letter-spacing: normal;
+  font-size: 16px;
 }

@@ -1,17 +1,34 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
+  // Worker 名稱，也是預設網址 https://walkie-talkie.<你的子網域>.workers.dev 的前綴
   "name": "walkie-talkie",
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-10-01",
+
+  // 前端靜態檔（vite build 的輸出）由同一個 Worker 提供
   "assets": {
+    // /r/123456 這類前端路由都回傳 index.html
     "not_found_handling": "single-page-application",
     // WebSocket 與 API 一律先交給 Worker 處理，其餘走靜態資源
     "run_worker_first": ["/api/*"]
   },
+
+  // 一個房間 = 一個 Durable Object
   "durable_objects": {
     "bindings": [{ "name": "CHANNEL", "class_name": "Channel" }]
   },
-  // SQLite 型 Durable Object 才能在 Workers 免費方案使用
+  // SQLite 型 Durable Object 才能在 Workers 免費方案使用。
+  // 之後若新增或改名 Durable Object 類別，要在這裡「新增」一筆 migration，不能修改已部署過的。
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Channel"] }],
-  "observability": { "enabled": true }
+
+  // 啟用 *.workers.dev 網址；綁了自己的網域後可改成 false
+  "workers_dev": true,
+  // 每次上傳新版本都會產生一個預覽網址，方便測試
+  "preview_urls": true,
+
+  // 自訂網域：網域需先加入 Cloudflare（DNS 由 Cloudflare 代管），取消註解並改成你的網域即可
+  // "routes": [{ "pattern": "talk.example.com", "custom_domain": true }],
+
+  "observability": { "enabled": true },
+  "upload_source_maps": true
 }

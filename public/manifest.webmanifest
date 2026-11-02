@@ -1,7 +1,7 @@
 {
   "name": "對講機 Walkie-Talkie",
   "short_name": "對講機",
-  "description": "按住說話，聲音即時傳給頻道裡的每個人。",
+  "description": "建立房間、分享連結，聲音即時傳給房間裡的每個人。",
   "lang": "zh-Hant",
   "start_url": "/",
   "scope": "/",

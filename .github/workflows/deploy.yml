@@ -1,0 +1,36 @@
+name: Deploy to Cloudflare
+
+# main 分支有新的 commit 就部署到正式環境；也可以在 GitHub 的 Actions 頁面手動執行。
+# 需要先在 repo 的 Settings → Secrets and variables → Actions 新增：
+#   CLOUDFLARE_API_TOKEN   （權限：Account → Workers Scripts → Edit）
+#   CLOUDFLARE_ACCOUNT_ID
+# 詳細步驟見 docs/DEPLOY.md
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy

@@ -6,6 +6,7 @@ import {
   MAX_TALK_MS,
   type ClientMessage,
   type Member,
+  type RoomInfo,
   type ServerMessage,
 } from '../shared/protocol';
 
@@ -30,13 +31,15 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    const match = url.pathname.match(/^\/api\/channel\/([^/]+)\/ws$/);
+    const match = url.pathname.match(/^\/api\/channel\/([^/]+)\/(ws|info)$/);
     if (match) {
-      if (request.headers.get('Upgrade') !== 'websocket') {
+      const [, room, action] = match;
+      if (!ROOM_RE.test(room)) return new Response('Bad channel', { status: 400 });
+      if (action === 'ws' && request.headers.get('Upgrade') !== 'websocket') {
         return new Response('Expected WebSocket', { status: 426 });
       }
-      if (!ROOM_RE.test(match[1])) return new Response('Bad channel', { status: 400 });
-      return env.CHANNEL.get(env.CHANNEL.idFromName(match[1])).fetch(request);
+      if (action === 'info' && request.method !== 'GET') return new Response('Method not allowed', { status: 405 });
+      return env.CHANNEL.get(env.CHANNEL.idFromName(room)).fetch(request);
     }
 
     if (url.pathname === '/api/health') return Response.json({ ok: true });
@@ -59,6 +62,14 @@ export class Channel extends DurableObject<Env> {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    // 房間資訊：建立房間時確認號碼沒人在用、邀請頁顯示目前人數
+    if (url.pathname.endsWith('/info')) {
+      return Response.json(
+        { members: this.sockets().length, speaking: !!this.speakerSocket() } satisfies RoomInfo,
+        { headers: { 'Cache-Control': 'no-store' } },
+      );
+    }
+
     const id = url.searchParams.get('id') ?? '';
     if (!CLIENT_ID_RE.test(id)) return new Response('Bad client id', { status: 400 });
     const name = cleanName(url.searchParams.get('name'));

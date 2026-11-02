@@ -1,0 +1,16 @@
+# Cloudflare Workers 靜態資源的回應標頭
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: microphone=(self), camera=(), geolocation=()
+
+# 檔名含雜湊值，內容永遠不變，可以長期快取
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Service Worker 與 manifest 每次都要檢查新版，否則使用者會卡在舊版
+/sw.js
+  Cache-Control: no-cache
+/manifest.webmanifest
+  Cache-Control: no-cache
