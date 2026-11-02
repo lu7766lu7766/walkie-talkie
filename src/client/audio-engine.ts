@@ -25,10 +25,13 @@ export class AudioEngine {
   private source?: MediaStreamAudioSourceNode;
   private mic?: MediaStream;
   private playHead = 0;
-  private stopWaiter?: () => void;
+  private toneEnd = 0;
 
-  /** 每產生一個語音框就呼叫（已含 codec 標頭，可直接送出） */
-  onFrame: (frame: ArrayBuffer, level: number) => void = () => {};
+  /**
+   * 每 40 ms 產生一個語音框就呼叫（已含 codec 標頭，可直接送出）。
+   * level 是峰值（給 UI 動畫），rms 是濾掉低頻後的音量（給語音偵測）。
+   */
+  onFrame: (frame: ArrayBuffer, level: number, rms: number) => void = () => {};
   /** 播放端音量（0~1），給 UI 做音量動畫 */
   onRxLevel: (level: number) => void = () => {};
   beeps = true;
@@ -62,10 +65,7 @@ export class AudioEngine {
       channelCount: 1,
       channelCountMode: 'explicit',
     });
-    this.capture.port.onmessage = (e: MessageEvent) => {
-      if (e.data.frame) this.onFrame(e.data.frame, e.data.level);
-      else if (e.data.done) this.stopWaiter?.();
-    };
+    this.capture.port.onmessage = (e: MessageEvent) => this.onFrame(e.data.frame, e.data.level, e.data.rms);
     // 輸出是靜音，只是為了讓節點持續被音訊圖驅動
     this.capture.connect(this.ctx.destination);
 
@@ -124,21 +124,12 @@ export class AudioEngine {
     this.source.connect(this.capture!);
   }
 
-  startCapture() {
-    this.capture?.port.postMessage('start');
-  }
-
-  /** 停止擷取；會等最後半個框送出後才 resolve。 */
-  stopCapture(): Promise<void> {
-    return new Promise((resolve) => {
-      const timer = setTimeout(done, 300);
-      function done() {
-        clearTimeout(timer);
-        resolve();
-      }
-      this.stopWaiter = done;
-      this.capture?.port.postMessage('stop');
-    });
+  /**
+   * 喇叭是否還在出聲（含剛播完的一小段緩衝）。
+   * 即時監聽用它避免麥克風收到別人的聲音或提示音，誤以為是自己在說話。
+   */
+  get outputBusy(): boolean {
+    return this.ctx.currentTime < Math.max(this.playHead, this.toneEnd) + 0.3;
   }
 
   setVolume(v: number) {
@@ -209,5 +200,6 @@ export class AudioEngine {
       }
       t += dur;
     }
+    this.toneEnd = Math.max(this.toneEnd, t);
   }
 }

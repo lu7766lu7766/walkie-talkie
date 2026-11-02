@@ -39,6 +39,19 @@
 
       <section id="speaker-banner" class="banner" data-state="offline" aria-live="polite">連線中…</section>
 
+      <section class="card vox">
+        <label class="switch-row">
+          <span class="switch-text">
+            <strong>🎙️ 即時監聽</strong>
+            <small>開啟：偵測到你說話就自動傳送。關閉：改用按住發話。</small>
+          </span>
+          <input id="vox" type="checkbox" role="switch" class="switch" />
+        </label>
+        <div id="vox-meter" class="meter" data-state="idle" title="綠色是你的音量，白線是觸發門檻">
+          <span class="fill"></span><span class="mark"></span>
+        </div>
+      </section>
+
       <div class="ptt-wrap">
         <button id="ptt" class="ptt" data-state="offline" aria-label="發話鍵">
           <span id="ptt-label">按住說話</span>
@@ -47,8 +60,13 @@
 
       <details class="card settings">
         <summary>⚙️ 發話設定</summary>
+        <label class="row">
+          即時監聽靈敏度
+          <input id="vox-sensitivity" type="range" min="0" max="1" step="0.05" />
+        </label>
+        <p class="hint">環境吵雜容易誤觸發就調低；說話常常沒被偵測到就調高。即時監聽建議戴耳機，避免喇叭的聲音被麥克風收進去。</p>
         <fieldset>
-          <legend>發話方式</legend>
+          <legend>按住發話的方式</legend>
           <label class="row"><input type="radio" name="mode" value="hold" /> 按住說話、放開結束</label>
           <label class="row"><input type="radio" name="mode" value="toggle" /> 按一下開始、再按一下結束</label>
         </fieldset>

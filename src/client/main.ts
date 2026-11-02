@@ -13,19 +13,29 @@ import {
   type PttSource,
 } from './ptt-inputs';
 import { normalizeChannel, roomIdFor } from './room-id';
+import { VoiceDetector } from './vad';
 import { isIos, setupPwa } from './pwa';
 
 /** 前端與後端分開部署時（例如前端放 Vercel），用這個指到 Worker 的網址 */
 const API_ORIGIN: string = import.meta.env.VITE_API_ORIGIN || location.origin;
 /** 還沒拿到發話權前先錄起來的語音，拿到後一起補送，避免第一個字被吃掉 */
 const MAX_PENDING_FRAMES = 40;
+/** 即時監聽：偵測到說話時，往前補送多少個框（8 × 40 ms = 320 ms） */
+const PRE_ROLL_FRAMES = 8;
+/** 即時監聽被拒絕發話後，暫停偵測多久 */
+const VOX_COOLDOWN_MS = 1500;
 
 type TalkState = 'idle' | 'requesting' | 'talking' | 'stopping';
+type TalkSource = PttSource | 'vox';
 type Mode = 'hold' | 'toggle';
 
 interface Settings {
   name: string;
   channel: string;
+  /** 即時監聽：麥克風持續開著，偵測到說話就自動傳送 */
+  vox: boolean;
+  /** 即時監聽靈敏度 0~1 */
+  voxSensitivity: number;
   mode: Mode;
   key: string;
   headset: boolean;
@@ -42,6 +52,8 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 const settings: Settings = {
   name: '',
   channel: '',
+  vox: true,
+  voxSensitivity: 0.5,
   mode: 'hold',
   key: 'Space',
   headset: true,
@@ -108,11 +120,21 @@ class Room implements PttHandlers {
   private speaker: Member | null = null;
   private talk: TalkState = 'idle';
   private pending: ArrayBuffer[] = [];
-  private held = new Set<PttSource>();
+  private held = new Set<TalkSource>();
+  /** 最近幾個框，即時監聽觸發時往前補送 */
+  private preRoll: ArrayBuffer[] = [];
+  private readonly vad = new VoiceDetector(settings.voxSensitivity);
+  /** 即時監聽目前是否判定正在說話 */
+  private voxActive = false;
+  /** 這次發話是由即時監聽觸發的 */
+  private byVox = false;
+  private voxCooldownUntil = 0;
+  private stopTimer?: ReturnType<typeof setTimeout>;
   private talkStarted = 0;
   private talkTimer?: ReturnType<typeof setInterval>;
   private wakeLock?: WakeLockSentinel;
   private mediaStatus = '';
+  private meterFrame = 0;
 
   constructor(
     private readonly engine: AudioEngine,
@@ -120,7 +142,7 @@ class Room implements PttHandlers {
     private readonly roomId: Promise<string>,
   ) {
     this.headset = new HeadsetButton(this);
-    engine.onFrame = (frame, level) => this.onFrame(frame, level);
+    engine.onFrame = (frame, level, rms) => this.onFrame(frame, level, rms);
     engine.onRxLevel = (level) => setLevel(level);
     engine.beeps = settings.beeps;
     engine.setVolume(settings.volume);
@@ -186,6 +208,7 @@ class Room implements PttHandlers {
     this.headset.disable();
     this.engine.stop();
     clearInterval(this.talkTimer);
+    clearTimeout(this.stopTimer);
     void this.releaseWakeLock();
     if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
     $('room-view').hidden = true;
@@ -199,67 +222,128 @@ class Room implements PttHandlers {
   // ---- PttHandlers：各種輸入來源統一在這裡轉成「開始／結束發話」
 
   down(source: PttSource) {
-    if (settings.mode === 'toggle') return this.toggle(source);
-    this.held.add(source);
-    this.beginTalk();
+    if (settings.mode === 'toggle') this.toggle(source);
+    else this.press(source);
   }
 
   up(source: PttSource) {
-    if (settings.mode === 'toggle' || !this.held.delete(source)) return;
-    if (this.held.size === 0) void this.endTalk();
+    if (settings.mode === 'hold') this.unpress(source);
   }
 
-  toggle(_source: PttSource) {
-    if (this.talk === 'idle') this.beginTalk();
-    else void this.endTalk();
+  toggle(source: PttSource) {
+    if (this.talk === 'idle') this.press(source);
+    else this.endTalk();
+  }
+
+  /** 某個來源開始要求發話（多個來源同時按住時，全部放開才結束） */
+  private press(source: TalkSource, preRoll: ArrayBuffer[] = []) {
+    this.held.add(source);
+    this.beginTalk(preRoll);
+  }
+
+  private unpress(source: TalkSource) {
+    if (this.held.delete(source) && this.held.size === 0) this.endTalk();
   }
 
   // ---- 發話狀態機：idle → requesting → talking → stopping → idle
 
-  private beginTalk() {
+  private beginTalk(preRoll: ArrayBuffer[]) {
     if (this.talk !== 'idle' || !this.online) return;
     this.talk = 'requesting';
-    this.pending = [];
-    this.engine.startCapture();
+    this.pending = [...preRoll];
     this.conn.send({ t: 'talk' });
     this.render();
   }
 
-  private async endTalk() {
-    this.held.clear();
+  private endTalk() {
     if (this.talk === 'requesting') {
-      // 還沒拿到發話權就放開：放棄這次發話
+      // 還沒拿到發話權就結束：放棄這次發話
       this.conn.send({ t: 'release' });
       this.resetTalk();
-      void this.engine.stopCapture();
       this.render();
     } else if (this.talk === 'talking') {
+      // 等下一個框（最多 40 ms）送出後再釋放，句尾才不會被切掉
       this.talk = 'stopping';
-      this.render();
-      await this.engine.stopCapture(); // 等最後一個框送完再釋放
-      this.conn.send({ t: 'release' });
-      this.engine.talkEnd();
-      this.resetTalk();
+      this.held.clear();
+      this.stopTimer = setTimeout(() => this.finishTalk(), 200);
       this.render();
     }
   }
 
+  private finishTalk() {
+    if (this.talk !== 'stopping') return;
+    this.conn.send({ t: 'release' });
+    if (!this.byVox) this.engine.talkEnd();
+    this.resetTalk();
+    this.render();
+  }
+
   private resetTalk() {
-    if (this.talk === 'requesting' || this.talk === 'talking') void this.engine.stopCapture();
     this.talk = 'idle';
     this.pending = [];
     this.held.clear();
+    this.byVox = false;
+    this.voxActive = false;
+    this.vad.reset();
     clearInterval(this.talkTimer);
+    clearTimeout(this.stopTimer);
     setLevel(0);
   }
 
-  private onFrame(frame: ArrayBuffer, level: number) {
+  private onFrame(frame: ArrayBuffer, level: number, rms: number) {
     if (this.talk === 'requesting') {
       if (this.pending.length < MAX_PENDING_FRAMES) this.pending.push(frame);
     } else if (this.talk === 'talking' || this.talk === 'stopping') {
       this.conn.sendAudio(frame);
       setLevel(level);
+      if (this.talk === 'stopping') this.finishTalk();
     }
+
+    this.preRoll.push(frame);
+    if (this.preRoll.length > PRE_ROLL_FRAMES) this.preRoll.shift();
+    if (settings.vox) this.runVox(rms);
+  }
+
+  // ---- 即時監聽（聲控發話）：麥克風持續開著，偵測到說話才傳送
+
+  private runVox(rms: number) {
+    if (!this.voxActive && this.voxBlocked()) {
+      // 別人在講、或喇叭還在出聲：麥克風收到的多半是喇叭的回音，不能當成自己在說話
+      this.vad.reset();
+      this.renderMeter();
+      return;
+    }
+    const speaking = this.vad.update(rms);
+    if (speaking && !this.voxActive) {
+      this.voxActive = true;
+      if (this.talk === 'idle') this.byVox = true;
+      // 把偵測到說話之前的一小段一起送出，第一個字才不會被吃掉
+      this.press('vox', this.preRoll);
+    } else if (!speaking && this.voxActive) {
+      this.voxActive = false;
+      this.unpress('vox');
+    }
+    this.renderMeter();
+  }
+
+  private voxBlocked(): boolean {
+    return (
+      !this.online ||
+      (!!this.speaker && this.speaker.id !== this.me) ||
+      this.engine.outputBusy ||
+      Date.now() < this.voxCooldownUntil
+    );
+  }
+
+  private setVox(on: boolean) {
+    settings.vox = on;
+    saveSettings();
+    if (!on && this.voxActive) {
+      this.voxActive = false;
+      this.unpress('vox');
+    }
+    this.vad.reset();
+    this.render();
   }
 
   private onMessage(msg: ServerMessage) {
@@ -279,25 +363,30 @@ class Room implements PttHandlers {
           return;
         }
         this.talk = 'talking';
-        this.engine.talkPermit();
+        // 聲控發話不播提示音：會被自己的麥克風收進去，而且一句一聲太吵
+        if (!this.byVox) this.engine.talkPermit();
         this.pending.splice(0).forEach((f) => this.conn.sendAudio(f));
         this.talkStarted = Date.now();
         this.talkTimer = setInterval(() => {
-          if (Date.now() - this.talkStarted >= MAX_TALK_MS) void this.endTalk();
+          if (Date.now() - this.talkStarted >= MAX_TALK_MS) this.endTalk();
           this.render();
         }, 250);
         break;
       case 'denied':
-        if (this.talk !== 'requesting') return;
+      case 'revoked': {
+        if (msg.t === 'denied' && this.talk !== 'requesting') return;
+        const byVox = this.byVox;
         this.resetTalk();
-        this.speaker = msg.speaker;
-        this.engine.busy();
-        vibrate([60, 60, 60]);
+        if (msg.t === 'denied') this.speaker = msg.speaker;
+        if (byVox) {
+          // 聲控被擋（例如兩人同時開口）：安靜退讓，稍後再偵測
+          this.voxCooldownUntil = Date.now() + VOX_COOLDOWN_MS;
+        } else {
+          this.engine.busy();
+          vibrate([60, 60, 60]);
+        }
         break;
-      case 'revoked':
-        this.resetTalk();
-        this.engine.busy();
-        break;
+      }
       case 'speaker': {
         const prev = this.speaker;
         this.speaker = msg.speaker;
@@ -330,13 +419,14 @@ class Room implements PttHandlers {
       [text, state] = ['連線中…', 'offline'];
     } else if (this.talk === 'talking' || this.talk === 'stopping') {
       const secs = Math.floor((Date.now() - this.talkStarted) / 1000);
-      [text, state] = [`🔴 發話中 ${secs}s／${MAX_TALK_MS / 1000}s`, 'talking'];
+      const what = this.byVox ? '偵測到說話，傳送中' : '發話中';
+      [text, state] = [`🔴 ${what} ${secs}s／${MAX_TALK_MS / 1000}s`, 'talking'];
     } else if (this.talk === 'requesting') {
       [text, state] = ['請求發話中…', 'requesting'];
     } else if (otherTalking) {
       [text, state] = [`🔊 ${this.speaker!.name} 正在說話`, 'receiving'];
     } else {
-      [text, state] = ['頻道空閒', 'idle'];
+      [text, state] = [settings.vox ? '🎙️ 即時監聽中，說話就會自動傳送' : '頻道空閒', 'idle'];
     }
     banner.textContent = text;
     banner.dataset.state = state;
@@ -344,14 +434,20 @@ class Room implements PttHandlers {
     ptt.dataset.state = state;
     label.textContent =
       state === 'talking'
-        ? settings.mode === 'toggle'
-          ? '再按一下結束'
-          : '放開結束'
+        ? this.byVox
+          ? '傳送中'
+          : settings.mode === 'toggle'
+            ? '再按一下結束'
+            : '放開結束'
         : state === 'receiving'
           ? '頻道忙線'
-          : settings.mode === 'toggle'
-            ? '按一下說話'
-            : '按住說話';
+          : settings.vox
+            ? '聆聽中'
+            : settings.mode === 'toggle'
+              ? '按一下說話'
+              : '按住說話';
+    $<HTMLInputElement>('vox').checked = settings.vox;
+    $('vox-meter').hidden = !settings.vox;
 
     $('member-count').textContent = String(this.members.length);
     const list = $('members');
@@ -365,6 +461,19 @@ class Room implements PttHandlers {
     );
   }
 
+  /** 即時監聽的麥克風音量表：綠色是目前音量，白線是觸發門檻 */
+  private renderMeter() {
+    if (this.meterFrame) return;
+    this.meterFrame = requestAnimationFrame(() => {
+      this.meterFrame = 0;
+      const meter = $('vox-meter');
+      const pct = (db: number) => `${Math.min(100, Math.max(0, ((db + 70) / 60) * 100)).toFixed(1)}%`;
+      meter.style.setProperty('--level', pct(this.vad.levelDb));
+      meter.style.setProperty('--threshold', pct(this.vad.thresholdDb));
+      meter.dataset.state = this.voxActive ? 'speaking' : this.voxBlocked() ? 'blocked' : 'idle';
+    });
+  }
+
   /** 鎖定畫面／通知列顯示目前狀態（只在狀態改變時更新，避免每 250 ms 重設） */
   private updateMediaStatus(state: string) {
     const title =
@@ -376,7 +485,9 @@ class Room implements PttHandlers {
             ? '請求發話中…'
             : state === 'receiving'
               ? `🔊 ${this.speaker!.name} 正在說話`
-              : '📻 頻道待命中';
+              : settings.vox
+                ? '🎙️ 即時監聽中'
+                : '📻 頻道待命中';
     const detail = `頻道 ${normalizeChannel(this.channel)}・${this.members.length} 人`;
     if (title + detail === this.mediaStatus) return;
     this.mediaStatus = title + detail;
@@ -397,6 +508,9 @@ class Room implements PttHandlers {
     modeInputs.forEach((r) => (r.checked = r.value === settings.mode));
     const headset = $<HTMLInputElement>('headset');
     const beeps = $<HTMLInputElement>('beeps');
+    const vox = $<HTMLInputElement>('vox');
+    const voxSensitivity = $<HTMLInputElement>('vox-sensitivity');
+    voxSensitivity.value = String(settings.voxSensitivity);
     const background = $<HTMLInputElement>('background');
     const keepScreenOn = $<HTMLInputElement>('keep-screen-on');
     background.checked = settings.background;
@@ -424,6 +538,11 @@ class Room implements PttHandlers {
         saveSettings();
         if (headset.checked) this.headset.enable();
         else this.headset.disable();
+      }),
+      listen(vox, 'change', () => this.setVox(vox.checked)),
+      listen(voxSensitivity, 'input', () => {
+        settings.voxSensitivity = this.vad.sensitivity = Number(voxSensitivity.value);
+        saveSettings();
       }),
       listen(background, 'change', () => {
         settings.background = background.checked;

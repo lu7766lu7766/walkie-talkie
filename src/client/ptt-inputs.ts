@@ -43,7 +43,12 @@ export function bindScreenButton(button: HTMLElement, h: PttHandlers): () => voi
   };
 }
 
-const TYPING_TARGET = 'input, textarea, select, [contenteditable]';
+/**
+ * 只有在文字輸入框裡才不攔截發話鍵。
+ * 開關、按鈕取得焦點時照樣發話，並且擋掉瀏覽器預設行為（否則空白鍵會切換開關或再按一次按鈕）。
+ */
+const TYPING_TARGET =
+  'input:not([type="checkbox"], [type="radio"], [type="range"], [type="button"], [type="submit"]), textarea, select, [contenteditable]';
 
 export function bindKeyboard(getKey: () => string, h: PttHandlers): () => void {
   let held = false;
