@@ -580,3 +580,11 @@ input[type='checkbox']:disabled + span {
   letter-spacing: normal;
   font-size: 16px;
 }
+
+.link {
+  background: none;
+  padding: 0;
+  color: var(--teal);
+  text-decoration: underline;
+  font-size: inherit;
+}

@@ -87,7 +87,6 @@ export class Room implements PttHandlers {
       roomId = await roomIdFor(this.code);
     } catch (err) {
       this.headset.disable();
-      this.engine.stop();
       throw err;
     }
 
@@ -119,7 +118,15 @@ export class Room implements PttHandlers {
       listen($('share-btn'), 'click', () => this.share()),
       listen($('room-code-btn'), 'click', () => this.copyLink()),
       // 任何互動都順便喚醒被系統暫停的 AudioContext（iOS 來電、切到背景後常見）
-      listen(window, 'pointerdown', () => this.engine.resumeIfNeeded(), true),
+      listen(
+        window,
+        'pointerdown',
+        () => {
+          this.engine.resumeIfNeeded();
+          void this.engine.ensureMic();
+        },
+        true,
+      ),
       listen(window, 'keydown', () => this.engine.resumeIfNeeded(), true),
       listen(document, 'visibilitychange', () => this.onVisibilityChange()),
       ...this.bindSettings(),
@@ -132,7 +139,8 @@ export class Room implements PttHandlers {
     this.cleanups.splice(0).forEach((fn) => fn());
     this.conn.close();
     this.headset.disable();
-    this.engine.stop();
+    // 只解除連結，麥克風保持開啟（部分手機關掉後再開會失敗）
+    this.engine.detach();
     clearInterval(this.talkTimer);
     clearTimeout(this.stopTimer);
     void this.releaseWakeLock();

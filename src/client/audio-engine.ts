@@ -33,6 +33,8 @@ export class AudioEngine {
   private readonly sink = this.ctx.createMediaStreamDestination();
   private readonly output = new Audio();
   private background = false;
+  private started = false;
+  private reopening?: Promise<void>;
   private capture?: AudioWorkletNode;
   private source?: MediaStreamAudioSourceNode;
   private mic?: MediaStream;
@@ -62,8 +64,22 @@ export class AudioEngine {
     };
   }
 
-  /** 必須在使用者手勢（點擊）中呼叫：解鎖播放並取得麥克風權限。 */
+  /**
+   * 必須在使用者手勢（點擊）中呼叫：解鎖播放並取得麥克風權限。
+   *
+   * 同一個網頁只會真正開一次麥克風：換房間、關閉即時監聽都沿用同一條麥克風串流，
+   * 因為部分手機瀏覽器關掉麥克風後再開會失敗，或拿到沒有聲音的串流；
+   * iOS 也限制同一頁能建立的 AudioContext 數量。
+   */
   async start(background: boolean, noise: NoiseOptions) {
+    if (this.started) {
+      const resumed = this.ctx.resume().catch(() => {});
+      this.setBackground(background);
+      this.setNoise(noise);
+      await Promise.all([resumed, this.ensureMic()]);
+      return;
+    }
+
     // iOS Safari：讓網頁聲音不受靜音鍵影響，並允許同時錄放
     const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
     if (session) session.type = 'play-and-record';
@@ -98,8 +114,22 @@ export class AudioEngine {
     await Promise.all([resumed, ready]);
     // iOS 取得麥克風時會切換 audio session，AudioContext 可能被中斷，再喚醒一次
     if (this.ctx.state !== 'running') await this.ctx.resume().catch(() => {});
+    this.started = true;
   }
 
+  /** 離開房間：解除與房間的連結，但麥克風與音訊保持開啟，下一個房間直接沿用 */
+  detach() {
+    this.onFrame = () => {};
+    this.onRxLevel = () => {};
+    this.playHead = 0;
+  }
+
+  /** 麥克風是否正在運作 */
+  get micLive(): boolean {
+    return !!this.mic?.getAudioTracks().some((t) => t.readyState === 'live');
+  }
+
+  /** 完全釋放麥克風與音訊（使用者在大廳主動關閉，或啟動失敗時） */
   stop() {
     this.mic?.getTracks().forEach((t) => t.stop());
     this.capture?.disconnect();
@@ -128,14 +158,18 @@ export class AudioEngine {
     if (this.background && this.output.paused) void this.output.play().catch(() => {});
   }
 
-  /** iOS 在背景時會關掉麥克風，回到前景後重新取得 */
-  async ensureMic() {
-    if (this.mic?.getAudioTracks().some((t) => t.readyState === 'live')) return;
-    try {
-      await this.openMic();
-    } catch {
-      // 權限被收回等情況，等下次互動再試
-    }
+  /**
+   * 麥克風被系統收走時（來電、其他 App 搶用、iOS 切到背景）重新取得。
+   * 麥克風還在運作時什麼都不做，所以可以放心頻繁呼叫。
+   */
+  ensureMic(): Promise<void> {
+    if (this.micLive || this.ctx.state === 'closed') return Promise.resolve();
+    this.reopening ??= this.openMic()
+      .catch(() => {
+        // 權限被收回或系統暫時不給，等下次互動或回到前景再試
+      })
+      .finally(() => (this.reopening = undefined));
+    return this.reopening;
   }
 
   private async openMic() {
@@ -147,6 +181,10 @@ export class AudioEngine {
     this.mic = mic;
     this.source = this.ctx.createMediaStreamSource(mic);
     this.source.connect(this.capture!);
+    // 串流被系統結束時，稍後自動重試（需要使用者操作的瀏覽器會在下次點擊時重試）
+    for (const track of mic.getAudioTracks()) {
+      track.addEventListener('ended', () => setTimeout(() => void this.ensureMic(), 1000));
+    }
   }
 
   /**

@@ -15,6 +15,11 @@ import { forgetRoom, recentRooms, rememberRoom, saveSettings, settings } from '.
  */
 
 let room: Room | null = null;
+/**
+ * 整個網頁共用一個音訊引擎：第一次進房間時開麥克風，之後換房間、回到大廳都不關，
+ * 避免部分手機瀏覽器關掉麥克風後再也打不開。只有使用者在大廳按「關閉麥克風」才釋放。
+ */
+let engine: AudioEngine | null = null;
 
 const views = ['lobby-view', 'invite-view', 'room-view'] as const;
 function show(view: (typeof views)[number]) {
@@ -44,8 +49,19 @@ function showLobby(message?: string) {
   joinCode.value = '';
   setError(lobbyError, message);
   renderRecent();
+  renderMicStatus();
   show('lobby-view');
 }
+
+function renderMicStatus() {
+  $('mic-status').hidden = !engine;
+}
+
+listen($('mic-release'), 'click', () => {
+  engine?.stop();
+  engine = null;
+  renderMicStatus();
+});
 
 function renderRecent() {
   const codes = recentRooms();
@@ -150,10 +166,14 @@ async function enterRoom(code: Promise<string>, name: string, errorEl: HTMLEleme
   const buttons = document.querySelectorAll<HTMLButtonElement>('#lobby-view button, #invite-view button');
   buttons.forEach((b) => (b.disabled = true));
 
-  const next = new Room(new AudioEngine(), onLeave);
+  engine ??= new AudioEngine();
+  const next = new Room(engine, onLeave);
   try {
     await next.start(code);
   } catch (err) {
+    // 啟動失敗（例如拒絕麥克風權限）：整個丟掉，下次重新建立
+    engine?.stop();
+    engine = null;
     setError(
       errorEl,
       err instanceof DOMException && err.name === 'NotAllowedError'
