@@ -77,6 +77,8 @@ export class AudioEngine {
   /** 播放端音量（0~1），給 UI 做音量動畫 */
   onRxLevel: (level: number) => void = () => {};
   beeps = true;
+  /** 指定的麥克風 deviceId（空字串：系統預設） */
+  micId = '';
 
   constructor() {
     this.rx.connect(this.master);
@@ -216,6 +218,28 @@ export class AudioEngine {
     this.playHead = 0;
   }
 
+  /**
+   * 換麥克風：先開新的再關舊的（openMic 的順序），失敗時保留原本的。
+   * 需在使用者操作中呼叫，部分瀏覽器才會允許。
+   */
+  async setMicDevice(id: string) {
+    this.micId = id;
+    if (!this.started && !this.mic) return;
+    await this.reopening?.catch(() => {});
+    try {
+      await this.openMic();
+      this.micError = null;
+    } catch (err) {
+      if (!this.micLive) this.micError = err;
+    }
+    this.onMicChange();
+  }
+
+  /** 目前使用中的麥克風 deviceId */
+  get currentMicId(): string {
+    return this.mic?.getAudioTracks()[0]?.getSettings().deviceId ?? '';
+  }
+
   /** 麥克風是否正在運作 */
   get micLive(): boolean {
     return !!this.mic?.getAudioTracks().some((t) => t.readyState === 'live');
@@ -289,9 +313,16 @@ export class AudioEngine {
     if (!navigator.mediaDevices?.getUserMedia) throw new TypeError('getUserMedia is not supported');
     // 記錄瀏覽器跳出詢問的次數：一直被問的人，畫面上提示怎麼設定成「一律允許」
     if ((await micPermission()) === 'prompt') countMicPrompt();
-    const mic = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-    });
+    const audio: MediaTrackConstraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 };
+    let mic: MediaStream;
+    try {
+      mic = await navigator.mediaDevices.getUserMedia({ audio: this.micId ? { ...audio, deviceId: { exact: this.micId } } : audio });
+    } catch (err) {
+      // 指定的麥克風不見了（拔掉、換裝置）：改用系統預設
+      const name = (err as { name?: string }).name;
+      if (!this.micId || (name !== 'NotFoundError' && name !== 'OverconstrainedError')) throw err;
+      mic = await navigator.mediaDevices.getUserMedia({ audio });
+    }
     this.mic?.getTracks().forEach((t) => t.stop());
     this.source?.disconnect();
     this.mic = mic;

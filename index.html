@@ -213,9 +213,17 @@
             <button id="bind-key" class="btn ghost small">重新綁定</button>
           </div>
           <label class="list-row">
-            <span>耳機播放鍵發話<small>按一下開始、再按一下結束</small></span>
+            <span>耳機播放鍵發話<small>按一下（或雙擊）開始、再按一次結束</small></span>
             <input id="headset" type="checkbox" role="switch" class="switch" />
           </label>
+          <div class="list-row stack">
+            <label class="select-row">
+              <span>麥克風</span>
+              <select id="mic-select"><option value="">自動（系統預設）</option></select>
+            </label>
+            <small class="hint">用藍牙耳機的按鍵發話時，建議選手機或電腦內建的麥克風：用耳機麥克風時耳機會切到「通話模式」，雙擊可能變成接聽／掛斷，按鍵就傳不到這裡。</small>
+            <small id="headset-last" class="hint">還沒收到耳機按鍵。按一下耳機試試，這裡會顯示收到的按鍵。</small>
+          </div>
         </div>
 
         <h3 class="group-title">降噪</h3>

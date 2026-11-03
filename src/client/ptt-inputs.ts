@@ -104,7 +104,24 @@ export function keyLabel(key: string): string {
   return key.replace(/^Key/, '').replace(/^Digit/, '');
 }
 
-const HEADSET_ACTIONS = ['play', 'pause', 'stop', 'togglemicrophone'] as const;
+/**
+ * 耳機的按鍵會以這些媒體動作送來。雙擊在不同耳機上可能是「播放／暫停」或「下一首」，全部都當成發話鍵。
+ */
+const HEADSET_ACTIONS = ['play', 'pause', 'stop', 'nexttrack', 'previoustrack', 'togglemicrophone'] as const;
+/**
+ * 部分耳機或系統會把一次雙擊送成兩個事件（例如暫停＋播放），
+ * 如果照單全收會「開始發話又馬上結束」，聲音就送不出去。這段時間內的重複事件忽略。
+ */
+const HEADSET_DEBOUNCE_MS = 600;
+
+export const HEADSET_ACTION_LABELS: Record<string, string> = {
+  play: '播放',
+  pause: '暫停',
+  stop: '停止',
+  nexttrack: '下一首',
+  previoustrack: '上一首',
+  togglemicrophone: '麥克風',
+};
 
 /**
  * 耳機按鍵。瀏覽器只會把媒體鍵交給「正在播放媒體」的網頁，
@@ -113,6 +130,9 @@ const HEADSET_ACTIONS = ['play', 'pause', 'stop', 'togglemicrophone'] as const;
 export class HeadsetButton {
   private readonly audio = new Audio(silentWavUrl());
   private enabled = false;
+  private lastPress = 0;
+  /** 收到耳機按鍵時呼叫（給設定頁顯示「最近收到的按鍵」，方便確認耳機有沒有送出） */
+  onPress: (action: string, accepted: boolean) => void = () => {};
 
   constructor(private readonly h: PttHandlers) {
     this.audio.loop = true;
@@ -132,7 +152,11 @@ export class HeadsetButton {
     for (const action of HEADSET_ACTIONS) {
       try {
         navigator.mediaSession.setActionHandler(action as MediaSessionAction, () => {
-          this.h.toggle('headset');
+          const now = performance.now();
+          const accepted = now - this.lastPress > HEADSET_DEBOUNCE_MS;
+          this.lastPress = now;
+          if (accepted) this.h.toggle('headset');
+          this.onPress(action, accepted);
           // 系統可能已經把無聲音訊暫停，立刻恢復，否則下一次按鍵就收不到
           void this.audio.play().catch(() => {});
           navigator.mediaSession.playbackState = 'playing';
