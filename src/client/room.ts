@@ -842,12 +842,13 @@ export class Room implements PttHandlers {
         : 'AI 降噪已關閉：只使用瀏覽器內建的降噪與音量門檻。';
   }
 
+  /** 「分享邀請連結」：帶房間名稱等說明文字；不支援系統分享的瀏覽器（多半是電腦）改成複製整段訊息 */
   private async share() {
     const url = roomUrl(this.code);
     const text = `${this.inviteText}（只有收到這個連結的人才進得來）`;
     try {
       if (navigator.share) await navigator.share({ title: `${this.title}｜對講機`, text, url });
-      else await this.copyLink();
+      else await copyText(`${text}\n${url}`, '已複製邀請訊息，貼到聊天室傳給要加入的人', '複製這段邀請訊息，傳給要加入的人：');
     } catch {
       // 使用者取消分享
     }
@@ -867,14 +868,9 @@ export class Room implements PttHandlers {
     return this.topic ? `邀請你加入「${this.topic}」對講機房間` : '一起加入對講機房間';
   }
 
-  /** 複製邀請連結：有房間名稱時連同名稱一起複製，貼到聊天室對方一看就知道是哪個房間 */
+  /** 複製圖示：只複製網址（要附房間名稱等說明請用「分享邀請連結」） */
   private copyLink() {
-    const url = roomUrl(this.code);
-    return copyText(
-      this.topic ? `${this.inviteText}：\n${url}` : url,
-      '已複製邀請連結，傳給要加入的人',
-      '複製這個邀請連結，傳給要加入的人：',
-    );
+    return copyText(roomUrl(this.code), '已複製邀請連結', '複製這個邀請連結：');
   }
 
   /** 只複製房間代碼：對方可以在大廳貼上加入（給從主畫面 App 開啟的人） */
