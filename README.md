@@ -81,7 +81,7 @@ Vercel 的 Serverless Functions 不支援長時間的 WebSocket 連線，而 Clo
 
 - **防止亂入**：房間代碼是 128 bit 隨機值（網址裡 22 個字元，例如 `/r/lWnfsojK-Z7zrZY5lYVong`），不可能被猜到或列舉；伺服器也沒有任何列出房間的 API。要進入房間只能靠邀請連結
 - **從主畫面 PWA 開啟的人**：iPhone 點邀請連結一定會開到 Safari（不會進主畫面的 App），所以大廳有「貼上邀請連結」：在聊天 App 長按連結複製，回到 App 按「📋 貼上」就直接進房間（整段 LINE 訊息貼上也看得懂）。Android 已安裝的 PWA 在支援的情況下會直接用 App 開啟邀請連結（manifest 的 `handle_links` / `launch_handler`）
-- 房間頁上方點「房間 lWnf 🔗」展開邀請資訊，可以**分別複製房間代碼或邀請連結**；或按「邀請」用 LINE 等 App 傳送。「lWnf」是代碼前 4 碼，只用來口頭確認大家在同一個房間，光靠它進不了房間
+- 房間頁上方點「房間 lWnf 🔗」展開邀請資訊，可以**分別複製房間代碼或邀請連結**，也有**邀請 QR code**（點一下全螢幕放大，旁邊的人用手機相機掃描就能加入）；或按「邀請」用 LINE 等 App 傳送。「lWnf」是代碼前 4 碼，只用來口頭確認大家在同一個房間，光靠它進不了房間
 - 暱稱在大廳或邀請頁修改時就自動存到瀏覽器（localStorage），之後開啟、換房間都沿用
 - 按「退出」或瀏覽器的「上一頁」回到大廳
 - 瀏覽器規定一定要使用者點一下才能開麥克風與播放聲音，所以點連結後需要再按一次「進入房間」，無法完全自動進入
@@ -311,6 +311,7 @@ src/
   client/vad.ts            語音偵測（音量 × AI 人聲機率交叉比對）
   client/transcript.ts     房間最下方的通話文字（新的在上、▶ 重播、1 分鐘淡出）
   client/clips.ts          每段發話的語音（重播用，只存在記憶體）
+  client/qr.ts             邀請 QR code（uqr 產生矩陣，畫成 SVG）
   client/room-id.ts        房間代碼（128 bit 隨機）、邀請網址、房間 id（SHA-256）
   client/pwa.ts            Service Worker 註冊、安裝按鈕
 public/

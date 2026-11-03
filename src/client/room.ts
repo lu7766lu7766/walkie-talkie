@@ -16,6 +16,7 @@ import { describeMicError } from './mic-error';
 import { API_ORIGIN, roomIdFor, roomLabel, roomUrl } from './room-id';
 import { clientId, saveSettings, settings, type Mode } from './settings';
 import { ClipStore } from './clips';
+import { renderQr } from './qr';
 import { TranscriptLog } from './transcript';
 import { VoiceDetector } from './vad';
 
@@ -136,6 +137,7 @@ export class Room implements PttHandlers {
     $('room-code').textContent = roomLabel(this.code);
     $('room-token').textContent = this.code;
     $('room-link').textContent = roomUrl(this.code);
+    renderQr($('invite-qr'), roomUrl(this.code), `加入房間 ${roomLabel(this.code)} 的 QR code`);
     this.toggleInvitePanel(false);
 
     this.cleanups.push(
@@ -146,6 +148,11 @@ export class Room implements PttHandlers {
       listen($('room-code-btn'), 'click', () => this.toggleInvitePanel()),
       listen($('copy-token'), 'click', () => void this.copyToken()),
       listen($('copy-link'), 'click', () => void this.copyLink()),
+      listen($('invite-qr'), 'click', () => this.showQr(true)),
+      listen($('qr-overlay'), 'click', () => this.showQr(false)),
+      listen(document, 'keydown', (e) => {
+        if ((e as KeyboardEvent).key === 'Escape') this.showQr(false);
+      }),
       listen($('mic-retry'), 'click', () => void this.retryMic()),
       // 任何互動都順便喚醒被系統暫停的 AudioContext（iOS 來電、切到背景後常見）
       listen(
@@ -174,6 +181,7 @@ export class Room implements PttHandlers {
     clearInterval(this.talkTimer);
     clearTimeout(this.stopTimer);
     this.stopReplay?.();
+    this.showQr(false);
     this.transcript.destroy();
     this.clips.clear();
     void this.releaseWakeLock();
@@ -648,6 +656,16 @@ export class Room implements PttHandlers {
     } catch {
       // 使用者取消分享
     }
+  }
+
+  /** 全螢幕顯示大張 QR code，方便在旁邊的人掃描 */
+  private showQr(open: boolean) {
+    const overlay = $('qr-overlay');
+    if (open) {
+      renderQr($('qr-large'), roomUrl(this.code), `加入房間 ${roomLabel(this.code)} 的 QR code`);
+      $('qr-room').textContent = roomLabel(this.code);
+    }
+    overlay.hidden = !open;
   }
 
   /** 點標題的「房間 xxxx 🔗」展開／收合房間代碼與邀請連結 */

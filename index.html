@@ -81,6 +81,10 @@
           <code id="room-link" class="invite-value"></code>
           <button id="copy-link" class="ghost small">複製邀請連結</button>
         </div>
+        <div class="invite-qr-row">
+          <button id="invite-qr" class="invite-qr" type="button" aria-label="放大 QR code"></button>
+          <p class="hint">用手機相機掃描 QR code 也能直接加入。點一下可以放大。</p>
+        </div>
         <p class="hint">對方點邀請連結就能加入；也可以在大廳貼上邀請連結或房間代碼加入。只有拿到這些的人進得來。</p>
       </section>
 
@@ -177,6 +181,12 @@
         <p id="transcript-empty" class="hint">有人說完話後，內容會自動轉成文字並校正，顯示在這裡（1 分鐘後淡出）。</p>
       </section>
     </main>
+
+    <div id="qr-overlay" class="qr-overlay" role="dialog" aria-label="掃描 QR code 加入房間" hidden>
+      <div id="qr-large" class="qr-large"></div>
+      <p>掃描加入房間 <strong id="qr-room"></strong></p>
+      <p class="hint">點任意處關閉</p>
+    </div>
 
     <div id="toast" class="toast" hidden></div>
     <script type="module" src="/src/client/main.ts"></script>

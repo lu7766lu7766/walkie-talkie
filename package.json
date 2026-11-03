@@ -19,6 +19,7 @@
     "wrangler": "^4.154.0"
   },
   "dependencies": {
-    "@sapphi-red/web-noise-suppressor": "^0.4.1"
+    "@sapphi-red/web-noise-suppressor": "^0.4.1",
+    "uqr": "^0.1.3"
   }
 }

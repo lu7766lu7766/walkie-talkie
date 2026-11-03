@@ -719,3 +719,56 @@ input[type='checkbox']:disabled + span {
 .status-failed .transcript-text {
   color: var(--muted);
 }
+
+/* ---------- 邀請 QR code ---------- */
+
+.invite-qr-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.invite-qr {
+  flex: none;
+  width: 128px;
+  height: 128px;
+  padding: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+  cursor: zoom-in;
+}
+
+.invite-qr svg,
+.qr-large svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.qr-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  background: rgb(10 12 20 / 0.92);
+  text-align: center;
+  cursor: zoom-out;
+}
+
+.qr-overlay p {
+  margin: 0;
+}
+
+.qr-large {
+  width: min(80vw, 60vh, 420px);
+  aspect-ratio: 1;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+}
