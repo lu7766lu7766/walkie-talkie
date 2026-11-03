@@ -62,6 +62,8 @@ const MUTED_IDS = 'muted';
 const MAX_MUTED_IDS = 200;
 /** 房間名稱（主題），建立房間的人設定 */
 const TOPIC = 'topic';
+/** 房主是否開啟語音轉文字（沒設定過 = 開啟） */
+const TRANSCRIBE = 'transcribe';
 const HOST_KEY_RE = /^[A-Za-z0-9_-]{20,100}$/;
 
 /**
@@ -155,6 +157,8 @@ export class Channel extends DurableObject<Env> {
   /** 每個正在發話的人各自一段錄音（client id → 錄音） */
   private readonly recordings = new Map<string, Recording>();
   private transcripts: TranscriptEntry[] = [];
+  /** 語音轉文字開關的快取（DO 休眠醒來後是 null，要重新讀取） */
+  private transcribeOn: boolean | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -203,7 +207,8 @@ export class Channel extends DurableObject<Env> {
       you: id,
       members: this.members(),
       topic: await this.topic(),
-      transcripts: this.recentTranscripts(),
+      transcribe: await this.transcribeEnabled(),
+      transcripts: (await this.transcribeEnabled()) ? this.recentTranscripts() : [],
       serverNow: Date.now(),
     });
     this.broadcast({ t: 'members', members: this.members() }, server);
@@ -240,12 +245,32 @@ export class Channel extends DurableObject<Env> {
     } catch {
       return;
     }
+    // 開始發話時要知道要不要錄音轉文字；休眠醒來後先讀回設定
+    await this.transcribeEnabled();
     if (msg.t === 'talk') this.requestFloor(ws);
     else if (msg.t === 'release') this.releaseFloor(ws);
     else if (msg.t === 'hello') await this.hello(ws, msg);
     else if (msg.t === 'vox') this.update(ws, { vox: !!msg.on });
     else if (msg.t === 'mod') await this.moderate(ws, msg.action, msg.target);
     else if (msg.t === 'topic') await this.setTopic(ws, msg.topic);
+    else if (msg.t === 'transcribe') await this.setTranscribe(ws, !!msg.on);
+  }
+
+  private async transcribeEnabled(): Promise<boolean> {
+    this.transcribeOn ??= (await this.ctx.storage.get<boolean>(TRANSCRIBE)) ?? true;
+    return this.transcribeOn;
+  }
+
+  /** 房主開關語音轉文字：關閉時不再錄音，也清掉現有的通話紀錄 */
+  private async setTranscribe(ws: WebSocket, on: boolean) {
+    if (!attachment(ws).host) return;
+    this.transcribeOn = on;
+    await this.ctx.storage.put(TRANSCRIBE, on);
+    if (!on) {
+      this.recordings.clear();
+      this.transcripts = [];
+    }
+    this.broadcast({ t: 'transcribe', on });
   }
 
   // ---- 房間名稱
@@ -398,6 +423,8 @@ export class Channel extends DurableObject<Env> {
   // ---- 語音轉文字
 
   private startRecording(speaker: Attachment, id: string, at: number) {
+    // 房主關閉了語音轉文字：不錄音，聲音只轉發、不經過 AI
+    if (!this.transcriber || this.transcribeOn === false) return;
     this.recordings.set(speaker.id, { id, speakerId: speaker.id, name: speaker.name, at, chunks: [], bytes: 0 });
   }
 

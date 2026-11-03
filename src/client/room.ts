@@ -63,6 +63,8 @@ export class Room implements PttHandlers {
   private members: Member[] = [];
   /** 房間名稱（主題） */
   private topic = '';
+  /** 房主是否開啟語音轉文字 */
+  private transcribeOn = true;
   private talk: TalkState = 'idle';
   private pending: ArrayBuffer[] = [];
   private held = new Set<TalkSource>();
@@ -176,6 +178,9 @@ export class Room implements PttHandlers {
       listen($('all-mute'), 'click', () => this.moderate('mute', '*')),
       listen($('all-unmute'), 'click', () => this.moderate('unmute', '*')),
       listen($('quick-mute'), 'click', (e) => this.onMemberAction(e)),
+      listen($('transcribe-toggle'), 'change', () => {
+        if (this.isHost) this.conn.send({ t: 'transcribe', on: $<HTMLInputElement>('transcribe-toggle').checked });
+      }),
       listen($('topic-form'), 'submit', (e) => {
         e.preventDefault();
         if (this.isHost) this.conn.send({ t: 'topic', topic: $<HTMLInputElement>('topic-input').value });
@@ -399,7 +404,13 @@ export class Room implements PttHandlers {
         if (msg.topic || !this.created) this.topic = msg.topic;
         this.renderTopic();
         this.setMembers(msg.members);
+        this.transcribeOn = msg.transcribe;
         this.transcript.load(msg.transcripts, msg.serverNow);
+        break;
+      case 'transcribe':
+        this.transcribeOn = msg.on;
+        if (!msg.on) this.transcript.clear();
+        if (!this.isHost) toast(msg.on ? '房主開啟了語音轉文字' : '房主關閉了語音轉文字');
         break;
       case 'topic':
         this.topic = msg.topic;
@@ -589,6 +600,9 @@ export class Room implements PttHandlers {
     $('members-sheet-count').textContent = count;
     $('room-role').hidden = !this.isHost;
     $('host-actions').hidden = !this.isHost;
+    $<HTMLInputElement>('transcribe-toggle').checked = this.transcribeOn;
+    $('log').toggleAttribute('data-off', !this.transcribeOn);
+    $('transcript-off').hidden = this.transcribeOn;
     const others = this.members.filter((m) => !m.host);
     $<HTMLButtonElement>('all-vox-off').disabled = !others.some((m) => m.vox);
     $<HTMLButtonElement>('all-mute').disabled = !others.some((m) => !m.muted);

@@ -143,10 +143,11 @@
         </div>
       </section>
 
-      <section class="log">
+      <section id="log" class="log">
         <h2>通話紀錄</h2>
         <ol id="transcript" class="transcript" aria-live="polite"></ol>
         <p id="transcript-empty" class="hint">說完話後會自動轉成文字，1 分鐘後淡出。</p>
+        <p id="transcript-off" class="hint" hidden>房主已關閉語音轉文字，說話內容不會經過 AI。</p>
       </section>
     </main>
 
@@ -196,7 +197,11 @@
             </label>
             <button type="submit" class="btn ghost small">儲存</button>
           </form>
-          <p class="hint">你是房主：可以修改房間名稱、關閉別人的自動偵測，或禁言一直佔線的人（被禁言的人只能收聽）。</p>
+          <label class="host-switch">
+            <span>語音轉文字<small>關閉後不錄音、不送 AI，房間裡所有人都看不到通話紀錄</small></span>
+            <input id="transcribe-toggle" type="checkbox" role="switch" class="switch" />
+          </label>
+          <p class="hint">你是房主：可以修改房間名稱、開關語音轉文字、關閉別人的自動偵測，或禁言一直佔線的人（被禁言的人只能收聽）。</p>
           <div class="host-buttons">
             <button id="all-vox-off" class="btn ghost small">全部關閉自動偵測</button>
             <button id="all-mute" class="btn ghost small">全部禁言</button>

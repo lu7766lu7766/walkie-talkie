@@ -89,7 +89,9 @@ export type ClientMessage =
   /** 房主管理：target 是成員 id，'*' 表示房主以外的所有人 */
   | { t: 'mod'; action: ModAction; target: string }
   /** 房主修改房間名稱 */
-  | { t: 'topic'; topic: string };
+  | { t: 'topic'; topic: string }
+  /** 房主開關語音轉文字 */
+  | { t: 'transcribe'; on: boolean };
 
 export type ServerMessage =
   | {
@@ -98,6 +100,8 @@ export type ServerMessage =
       members: Member[];
       /** 房間名稱（主題） */
       topic: string;
+      /** 房主是否開啟語音轉文字 */
+      transcribe: boolean;
       /** 最近一分鐘的通話文字 */
       transcripts: TranscriptEntry[];
       /** 伺服器現在時間，用來換算紀錄的時間 */
@@ -106,6 +110,8 @@ export type ServerMessage =
   /** 成員或發話狀態改變（誰開始／結束說話也是用這個通知） */
   | { t: 'members'; members: Member[] }
   | { t: 'topic'; topic: string }
+  /** 房主開關了語音轉文字（關閉時通話紀錄清空） */
+  | { t: 'transcribe'; on: boolean }
   /** talkId：這次發話的 id，對應之後的通話文字，讓大家可以重播這段語音 */
   | { t: 'granted'; talkId: string }
   /** muted：被房主禁言；full：同時發話的人數已滿 */
