@@ -98,7 +98,7 @@ export default {
 
 /**
  * 邀請連結 /r/<代碼>：回傳一般的網頁，但把標題換成房間名稱。
- * 在 LINE、Messenger、Slack 等貼上連結時，預覽卡片就會顯示「週末登山｜對講機」。
+ * 在 LINE、Messenger、Slack 等貼上連結時，預覽卡片就會顯示房間名稱（例如「週末登山」）。
  */
 async function invitePage(request: Request, env: Env, token: string): Promise<Response> {
   const page = await env.ASSETS.fetch(new URL('/', request.url));
@@ -110,7 +110,7 @@ async function invitePage(request: Request, env: Env, token: string): Promise<Re
   } catch {
     // 查不到就用一般標題
   }
-  const title = topic ? `${topic}｜對講機` : '對講機房間邀請';
+  const title = topic || '對講機房間邀請';
   const description = topic
     ? `邀請你加入「${topic}」對講機房間，點開就能一起通話。`
     : '邀請你加入對講機房間，點開就能一起通話。';
@@ -121,7 +121,9 @@ async function invitePage(request: Request, env: Env, token: string): Promise<Re
     ['og:image', new URL('/icons/icon-512.png', request.url).href],
   ]
     .map(([property, content]) => `<meta property="${property}" content="${escapeHtml(content)}" />`)
-    .join('');
+    .join('') +
+    // 給前端的邀請頁直接顯示房間名稱，不用等查詢
+    (topic ? `<meta name="room-topic" content="${escapeHtml(topic)}" />` : '');
   const headers = new Headers(page.headers);
   headers.set('Cache-Control', 'no-store');
   return new HTMLRewriter()

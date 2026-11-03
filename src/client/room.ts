@@ -495,7 +495,7 @@ export class Room implements PttHandlers {
     $('qr-room').textContent = this.title;
     const input = $<HTMLInputElement>('topic-input');
     if (document.activeElement !== input) input.value = this.topic;
-    document.title = `${this.title}｜對講機`;
+    document.title = this.title;
   }
 
   // ---- UI
@@ -847,7 +847,7 @@ export class Room implements PttHandlers {
     const url = roomUrl(this.code);
     const text = `${this.inviteText}（只有收到這個連結的人才進得來）`;
     try {
-      if (navigator.share) await navigator.share({ title: `${this.title}｜對講機`, text, url });
+      if (navigator.share) await navigator.share({ title: this.title, text, url });
       else await copyText(`${text}\n${url}`, '已複製邀請訊息，貼到聊天室傳給要加入的人', '複製這段邀請訊息，傳給要加入的人：');
     } catch {
       // 使用者取消分享

@@ -181,9 +181,12 @@ let inviteCode = '';
 function showInvite(code: string) {
   inviteCode = code;
   $('invite-code').textContent = roomLabel(code);
-  // 直接打開邀請連結時，Worker 已經把網頁標題換成「房間名稱｜對講機」，先拿來顯示
+  // 直接打開邀請連結時，Worker 已經在網頁裡放了房間名稱，先拿來顯示
   const title = $('invite-topic-title');
-  const fromWorker = document.title.match(/^(.+)｜對講機$/)?.[1];
+  // 只用一次：之後在網頁內換到別的邀請頁時，這個名稱就不是那個房間的了
+  const meta = document.querySelector<HTMLMetaElement>('meta[name="room-topic"]');
+  const fromWorker = meta?.content;
+  meta?.remove();
   title.textContent = fromWorker ?? `房間 ${roomLabel(code)}`;
   inviteName.value = settings.name;
   setError(inviteError);
@@ -193,7 +196,7 @@ function showInvite(code: string) {
     if (inviteCode !== code) return;
     if (r?.topic) {
       title.textContent = r.topic;
-      document.title = `${r.topic}｜對講機`;
+      document.title = r.topic;
     }
     info.textContent = !r
       ? ''
