@@ -320,6 +320,13 @@ export class Room implements PttHandlers {
     this.render();
   }
 
+  /** 立刻結束發話（不等最後一個語音框） */
+  private stopTalkNow() {
+    if (this.talk !== 'idle') this.conn.send({ t: 'release' });
+    this.resetTalk();
+    this.render();
+  }
+
   private resetTalk() {
     this.talk = 'idle';
     this.txTalkId = null;
@@ -546,12 +553,18 @@ export class Room implements PttHandlers {
     this.updateMediaStatus(state);
     // 沒有麥克風時只能收聽：發話鍵顯示原因，別人說話時仍照常顯示
     const noMic = !this.engine.micLive;
+    // 離開畫面時暫停、回來沒辦法自動重開（瀏覽器沒設成一律允許）：按一下就開
+    const paused = (this.engine.micError as { name?: string } | null)?.name === 'PausedError';
     $('mic-notice').hidden = !noMic;
-    if (noMic) $('mic-notice-text').textContent = describeMicError(this.engine.micError);
+    if (noMic) {
+      $('mic-notice-title').textContent = paused ? '麥克風已暫停，目前只能收聽' : '沒有可用的麥克風，目前只能收聽';
+      $('mic-notice-text').textContent = describeMicError(this.engine.micError);
+      $('mic-retry').textContent = paused ? '開啟麥克風' : '重新偵測麥克風';
+    }
     if (noMic && state === 'idle') state = 'nomic';
     if (this.muted && state !== 'offline' && state !== 'talking' && state !== 'requesting') state = 'muted';
     ptt.dataset.state = state;
-    label.textContent = state === 'muted' ? '已被禁言' : state === 'nomic' ? '沒有麥克風・只能收聽' :
+    label.textContent = state === 'muted' ? '已被禁言' : state === 'nomic' ? (paused ? '按一下開啟麥克風' : '沒有麥克風・只能收聽') :
       state === 'talking'
         ? this.byVox
           ? '傳送中'
@@ -742,10 +755,17 @@ export class Room implements PttHandlers {
   }
 
   private onVisibilityChange() {
-    if (document.visibilityState !== 'visible') return;
-    // 回到前景：喚醒被系統暫停的音訊、iOS 會關掉的麥克風、耳機按鍵與螢幕常亮
+    if (document.visibilityState === 'hidden') {
+      // 離開畫面：關掉麥克風（正在發話就結束），背景照樣聽得到別人說話
+      if (settings.releaseMicWhenHidden && this.engine.micLive) {
+        this.stopTalkNow();
+        this.engine.suspendMic();
+      }
+      return;
+    }
+    // 回到前景：喚醒被系統暫停的音訊、重新開啟麥克風、耳機按鍵與螢幕常亮
     this.engine.resumeIfNeeded();
-    void this.engine.ensureMic(true);
+    void this.engine.resumeMic();
     this.headset.keepAlive();
     void this.keepAwake();
   }
@@ -768,6 +788,8 @@ export class Room implements PttHandlers {
     this.renderNoiseLabels();
     const background = $<HTMLInputElement>('background');
     const keepScreenOn = $<HTMLInputElement>('keep-screen-on');
+    const releaseMic = $<HTMLInputElement>('release-mic-hidden');
+    releaseMic.checked = settings.releaseMicWhenHidden;
     background.checked = settings.background;
     keepScreenOn.checked = settings.keepScreenOn;
     keepScreenOn.disabled = !('wakeLock' in navigator);
@@ -807,6 +829,10 @@ export class Room implements PttHandlers {
         settings.background = background.checked;
         saveSettings();
         this.engine.setBackground(background.checked);
+      }),
+      listen(releaseMic, 'change', () => {
+        settings.releaseMicWhenHidden = releaseMic.checked;
+        saveSettings();
       }),
       listen(keepScreenOn, 'change', () => {
         settings.keepScreenOn = keepScreenOn.checked;
