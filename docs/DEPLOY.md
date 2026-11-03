@@ -90,6 +90,10 @@ Workers 免費方案（每天 10 萬次請求、Durable Objects 每天 10 萬次
 WebSocket 收到的訊息以 20:1 計費，一個人說話每秒 25 個語音框，估計每天約可累計 22 小時的發話時間。
 用量大時升級 Workers Paid（每月 5 美元起）。實際數字以 [Cloudflare 官方定價](https://developers.cloudflare.com/workers/platform/pricing/) 為準。
 
+**通話文字（Workers AI）**：`wrangler.jsonc` 已設定 `"ai": { "binding": "AI" }`，部署後自動可用，不需要另外開通。
+語音轉文字（Whisper）與校正（Qwen）會使用 Workers AI 額度，免費方案每天有固定免費額度，超過後當天不會再產生通話文字（通話本身不受影響）。
+用量在後台 **AI** → **Workers AI** 查看，價格見 [Workers AI 定價](https://developers.cloudflare.com/workers-ai/platform/pricing/)。不想使用就把 `wrangler.jsonc` 的 `"ai"` 那行拿掉再部署。
+
 ## 常見問題
 
 - **部署時出現 Durable Object migration 錯誤**：`wrangler.jsonc` 的 `migrations` 已部署過的項目不能修改，只能新增

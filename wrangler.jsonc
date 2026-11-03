@@ -17,6 +17,9 @@
   "durable_objects": {
     "bindings": [{ "name": "CHANNEL", "class_name": "Channel" }]
   },
+  // Workers AI：發話結束後語音轉文字（Whisper）與自動校正（Qwen）
+  "ai": { "binding": "AI" },
+
   // SQLite 型 Durable Object 才能在 Workers 免費方案使用。
   // 之後若新增或改名 Durable Object 類別，要在這裡「新增」一筆 migration，不能修改已部署過的。
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Channel"] }],

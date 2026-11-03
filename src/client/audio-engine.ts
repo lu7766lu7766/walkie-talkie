@@ -40,6 +40,8 @@ export class AudioEngine {
   private mic?: MediaStream;
   private playHead = 0;
   private toneEnd = 0;
+  private clipEnd = 0;
+  private stopClip?: () => void;
 
   /**
    * 每 40 ms 產生一個語音框就呼叫（已含 codec 標頭，可直接送出）。
@@ -207,7 +209,7 @@ export class AudioEngine {
    * 即時監聽用它避免麥克風收到別人的聲音或提示音，誤以為是自己在說話。
    */
   get outputBusy(): boolean {
-    return this.ctx.currentTime < Math.max(this.playHead, this.toneEnd) + 0.3;
+    return this.ctx.currentTime < Math.max(this.playHead, this.toneEnd, this.clipEnd) + 0.3;
   }
 
   setNoise(noise: NoiseOptions) {
@@ -240,6 +242,47 @@ export class AudioEngine {
     src.start(this.playHead);
     this.playHead += buffer.duration;
     this.onRxLevel(peak);
+  }
+
+  /**
+   * 重播一段語音（通話文字的 ▶）。同時只會播一段，播新的會先停掉舊的。
+   * 回傳停止函式；播完或被停止時呼叫 onEnd。
+   */
+  playClip(frames: ArrayBuffer[], onEnd: () => void): () => void {
+    this.stopClip?.();
+    let total = 0;
+    for (const f of frames) total += f.byteLength - 1;
+    const buffer = this.ctx.createBuffer(1, Math.max(1, total), AUDIO_SAMPLE_RATE);
+    const samples = buffer.getChannelData(0);
+    let o = 0;
+    for (const f of frames) {
+      const bytes = new Uint8Array(f);
+      if (bytes[0] !== CODEC_MULAW_16K) continue;
+      for (let i = 1; i < bytes.length; i++) samples[o++] = MULAW_TO_FLOAT[bytes[i]];
+    }
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(this.rx);
+    const start = this.ctx.currentTime + 0.05;
+    src.start(start);
+    this.clipEnd = start + buffer.duration;
+
+    let stopped = false;
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      try {
+        src.stop();
+      } catch {
+        // 已經停了
+      }
+      this.clipEnd = 0;
+      if (this.stopClip === stop) this.stopClip = undefined;
+      onEnd();
+    };
+    src.onended = stop;
+    this.stopClip = stop;
+    return stop;
   }
 
   /** 取得發話權：上揚雙音 */

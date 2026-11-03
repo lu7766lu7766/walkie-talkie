@@ -11,6 +11,7 @@
 - **耳機／藍牙耳機按鍵**：按一下播放鍵開始、再按一下結束（限制說明見下方）
 - **同一時間只有一人能說話**（半雙工），跟真的對講機一樣；別人在講時按下會聽到忙線音。每個房間最多 50 人同時收聽
 - 開始／結束提示音（roger beep）、說話者顯示、成員列表、斷線自動重連
+- **通話文字**：每段發話結束後自動轉成文字並校正（Workers AI），顯示在房間最下方：時間、發話人、內容，右邊 ▶ 可重播語音，新的在上，1 分鐘後淡出
 - **背景執行與播放**：切到其他 App 或鎖屏後繼續收聽；鎖定畫面／通知列顯示誰正在說話
 - PWA：可加入主畫面、全螢幕執行、離線也能開啟 App 外殼
 
@@ -164,6 +165,28 @@ Vercel 的 Serverless Functions 不支援長時間的 WebSocket 連線，而 Clo
 
 即時監聽開著的時候，螢幕按鈕、鍵盤、耳機按鍵仍然可以手動發話。
 
+## 通話文字（語音轉文字＋自動校正）
+
+房間最下方的「📝 通話文字」會顯示每段發話的**時間、發話人與內容**，右邊的 **▶ 可以重播那段語音**，新的在上面，出現 1 分鐘後自動淡出。
+
+```
+發話結束 → Durable Object 把剛轉發過的這段語音轉成 WAV
+        → Workers AI Whisper（@cf/openai/whisper-large-v3-turbo）辨識成文字
+        → Workers AI Qwen3（@cf/qwen/qwen3-30b-a3b-fp8）校正同音錯字、補全形標點、轉繁體
+        → 廣播給房間所有人
+```
+
+- 畫面依序顯示「辨識中…」→ 辨識結果（標示「校正中…」）→ 校正後的文字（閃一下表示已校正）
+- 伺服器本來就在轉發語音，所以**不分瀏覽器、沒有麥克風只能收聽的人也看得到**
+- 不辨識：短於 0.6 秒的發話、幾乎沒有聲音的發話（例如被人聲閘門靜音）；也會濾掉 Whisper 在雜音上常見的「幻覺」輸出（「字幕由 Amara.org 社群提供」「請不吝點贊訂閱」等）
+- 校正結果跟原文長度差太多（模型自己發揮）就保留原文；AI 失敗或逾時（例如當天免費額度用完）會顯示「無法辨識，可按 ▶ 重聽」，不影響通話
+- **▶ 重播**：辨識再準也難免聽錯人名、數字、地名，所以每筆都能重聽原音。語音是每支手機收到時順便留在記憶體的一份，不經伺服器、不多花流量，通話文字淡出就刪掉；剛進房間前的紀錄沒有語音可重播
+- 剛進房間的人會看到最近一分鐘的紀錄；紀錄只存在記憶體，不會永久保存
+
+**費用與隱私：** 會用到 Workers AI 的額度（免費方案每天有固定免費額度，Whisper 以音訊分鐘計價、很便宜，實際用量可在 Cloudflare 後台 Workers AI 頁面查看）。語音會送到 Cloudflare Workers AI 處理；不想使用可以把 `wrangler.jsonc` 裡的 `"ai"` 設定拿掉，就不會產生通話文字。
+
+**本機開發：** Workers AI 只能連到 Cloudflare 執行，本機預設不連（不用登入），所以不會產生通話文字。要測試畫面流程可以在專案根目錄建立 `.dev.vars`，寫入 `TRANSCRIBE_FAKE=1`，會產生假的辨識結果（`TRANSCRIBE_FAKE=fail` 模擬 AI 出錯；改完要重新 `npm run build` 或重啟 `npm run dev`）；已 `npx wrangler login` 想用真的 AI，執行時加上 `CLOUDFLARE_REMOTE_BINDINGS=1`。
+
 ## 耳機／藍牙按鍵：能做到什麼、做不到什麼
 
 | 裝置 | 運作方式 | 支援「按住」？ |
@@ -275,7 +298,8 @@ npm run deploy
 src/
   shared/protocol.ts       前後端共用的訊息格式與常數
   shared/mulaw.ts          μ-law 編解碼
-  worker/index.ts          Worker 路由 + Channel Durable Object（成員、發話權、轉發）
+  worker/index.ts          Worker 路由 + Channel Durable Object（成員、發話權、轉發、通話文字）
+  worker/transcribe.ts     語音轉文字（Whisper）與校正（Qwen）、WAV 轉換、幻覺過濾
   client/main.ts           網址路由：大廳、邀請頁、房間
   client/room.ts           房間：連線、發話狀態機、即時監聽、畫面
   client/settings.ts       使用者設定（暱稱等，存在 localStorage）
@@ -285,6 +309,8 @@ src/
   client/connection.ts     自動重連的 WebSocket
   client/ptt-inputs.ts     螢幕／鍵盤／耳機三種發話鍵
   client/vad.ts            語音偵測（音量 × AI 人聲機率交叉比對）
+  client/transcript.ts     房間最下方的通話文字（新的在上、▶ 重播、1 分鐘淡出）
+  client/clips.ts          每段發話的語音（重播用，只存在記憶體）
   client/room-id.ts        房間代碼（128 bit 隨機）、邀請網址、房間 id（SHA-256）
   client/pwa.ts            Service Worker 註冊、安裝按鈕
 public/
@@ -303,7 +329,7 @@ docs/DEPLOY.md             Cloudflare 部署說明
 ### 安全性
 
 - 房間代碼是 128 bit 隨機值，只存在於邀請網址裡；Worker 只收到它的 SHA-256 雜湊，也沒有列出房間的 API
-- 這是「拿到邀請連結就能進入」的模式，**沒有帳號驗證**：連結被轉傳出去，收到的人也進得來。需要更嚴格時可以加房主核准或踢人（見後續規劃）。語音在傳輸中有 TLS 加密，但會經過 Cloudflare 伺服器轉發（不是端對端加密）
+- 這是「拿到邀請連結就能進入」的模式，**沒有帳號驗證**：連結被轉傳出去，收到的人也進得來。需要更嚴格時可以加房主核准或踢人（見後續規劃）。語音在傳輸中有 TLS 加密，但會經過 Cloudflare 伺服器轉發（不是端對端加密），通話文字功能也會把語音送到 Cloudflare Workers AI 辨識
 
 ---
 

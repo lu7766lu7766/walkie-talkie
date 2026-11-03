@@ -34,12 +34,38 @@ export interface RoomInfo {
   speaking: boolean;
 }
 
+/**
+ * 通話文字紀錄的一筆：發話結束後辨識，pending（辨識中）→ raw（辨識結果）→ corrected（校正後），
+ * AI 出錯時為 failed（仍可重播語音）。id 就是這次發話的 talkId。
+ */
+export interface TranscriptEntry {
+  id: string;
+  speakerId: string;
+  name: string;
+  /** 開始發話的時間（伺服器時間，毫秒） */
+  at: number;
+  text: string;
+  status: 'pending' | 'raw' | 'corrected' | 'failed';
+}
+
 export type ClientMessage = { t: 'talk' } | { t: 'release' };
 
 export type ServerMessage =
-  | { t: 'welcome'; you: string; members: Member[]; speaker: Member | null }
+  | {
+      t: 'welcome';
+      you: string;
+      members: Member[];
+      speaker: Member | null;
+      /** 最近一分鐘的通話文字 */
+      transcripts: TranscriptEntry[];
+      /** 伺服器現在時間，用來換算紀錄的時間 */
+      serverNow: number;
+    }
   | { t: 'members'; members: Member[] }
-  | { t: 'granted' }
+  /** talkId：這次發話的 id，對應之後的通話文字，讓大家可以重播這段語音 */
+  | { t: 'granted'; talkId: string }
   | { t: 'denied'; speaker: Member | null }
   | { t: 'revoked' }
-  | { t: 'speaker'; speaker: Member | null };
+  | { t: 'speaker'; speaker: Member | null; talkId?: string }
+  | { t: 'transcript'; entry: TranscriptEntry }
+  | { t: 'transcript-remove'; id: string };

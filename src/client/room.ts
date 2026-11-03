@@ -15,6 +15,8 @@ import {
 import { describeMicError } from './mic-error';
 import { API_ORIGIN, roomIdFor, roomLabel, roomUrl } from './room-id';
 import { clientId, saveSettings, settings, type Mode } from './settings';
+import { ClipStore } from './clips';
+import { TranscriptLog } from './transcript';
 import { VoiceDetector } from './vad';
 
 /** 還沒拿到發話權前先錄起來的語音，拿到後一起補送，避免第一個字被吃掉 */
@@ -35,6 +37,23 @@ export function noiseOptions(): NoiseOptions {
 export class Room implements PttHandlers {
   private conn!: Connection;
   private readonly headset: HeadsetButton;
+  /** 每段發話的語音，給通話文字的 ▶ 重播 */
+  private readonly clips = new ClipStore();
+  private readonly transcript = new TranscriptLog($('transcript'), $('transcript-empty'), {
+    myId: () => this.me,
+    hasClip: (id) => this.clips.has(id),
+    onPlay: (id) => this.toggleReplay(id),
+    onRemove: (id) => {
+      if (this.replayId === id) this.stopReplay?.();
+      this.clips.delete(id);
+    },
+  });
+  /** 別人正在發話的 talkId（收到的語音框存到這裡） */
+  private rxTalkId: string | null = null;
+  /** 自己這次發話的 talkId */
+  private txTalkId: string | null = null;
+  private replayId: string | null = null;
+  private stopReplay?: () => void;
   private readonly cleanups: (() => void)[] = [];
 
   private online = false;
@@ -88,6 +107,7 @@ export class Room implements PttHandlers {
       [roomId] = await Promise.all([roomIdFor(code), this.engine.start(settings.background, noiseOptions())]);
     } catch (err) {
       this.headset.disable();
+      this.transcript.destroy();
       throw err;
     }
 
@@ -106,7 +126,10 @@ export class Room implements PttHandlers {
         else this.render();
       },
       onMessage: (msg) => this.onMessage(msg),
-      onAudio: (frame) => this.engine.playFrame(frame),
+      onAudio: (frame) => {
+        this.engine.playFrame(frame);
+        if (this.rxTalkId) this.clips.add(this.rxTalkId, frame);
+      },
     });
     this.conn.connect();
 
@@ -150,6 +173,9 @@ export class Room implements PttHandlers {
     this.engine.detach();
     clearInterval(this.talkTimer);
     clearTimeout(this.stopTimer);
+    this.stopReplay?.();
+    this.transcript.destroy();
+    this.clips.clear();
     void this.releaseWakeLock();
     if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
     this.onLeave(message);
@@ -222,6 +248,7 @@ export class Room implements PttHandlers {
 
   private resetTalk() {
     this.talk = 'idle';
+    this.txTalkId = null;
     this.pending = [];
     this.held.clear();
     this.byVox = false;
@@ -236,7 +263,7 @@ export class Room implements PttHandlers {
     if (this.talk === 'requesting') {
       if (this.pending.length < MAX_PENDING_FRAMES) this.pending.push(frame);
     } else if (this.talk === 'talking' || this.talk === 'stopping') {
-      this.conn.sendAudio(frame);
+      this.sendFrame(frame);
       setLevel(level);
       if (this.talk === 'stopping') this.finishTalk();
     }
@@ -299,7 +326,14 @@ export class Room implements PttHandlers {
         this.me = msg.you;
         this.members = msg.members;
         this.speaker = msg.speaker;
+        this.transcript.load(msg.transcripts, msg.serverNow);
         break;
+      case 'transcript':
+        this.transcript.put(msg.entry);
+        return;
+      case 'transcript-remove':
+        this.transcript.remove(msg.id);
+        return;
       case 'members':
         this.members = msg.members;
         break;
@@ -312,7 +346,9 @@ export class Room implements PttHandlers {
         this.talk = 'talking';
         // 聲控發話不播提示音：會被自己的麥克風收進去，而且一句一聲太吵
         if (!this.byVox) this.engine.talkPermit();
-        this.pending.splice(0).forEach((f) => this.conn.sendAudio(f));
+        this.txTalkId = msg.talkId;
+        this.clips.start(msg.talkId);
+        this.pending.splice(0).forEach((f) => this.sendFrame(f));
         this.talkStarted = Date.now();
         this.talkTimer = setInterval(() => {
           if (Date.now() - this.talkStarted >= MAX_TALK_MS) this.endTalk();
@@ -337,6 +373,8 @@ export class Room implements PttHandlers {
       case 'speaker': {
         const prev = this.speaker;
         this.speaker = msg.speaker;
+        this.rxTalkId = msg.speaker && msg.speaker.id !== this.me ? (msg.talkId ?? null) : null;
+        if (this.rxTalkId) this.clips.start(this.rxTalkId);
         if (!prev && msg.speaker) this.engine.incoming();
         else if (prev && !msg.speaker) {
           this.engine.roger();
@@ -412,6 +450,30 @@ export class Room implements PttHandlers {
         return li;
       }),
     );
+  }
+
+  /** 送出語音框，同時留一份給自己的通話文字重播 */
+  private sendFrame(frame: ArrayBuffer) {
+    this.conn.sendAudio(frame);
+    if (this.txTalkId) this.clips.add(this.txTalkId, frame);
+  }
+
+  /** 通話文字的 ▶：播放／停止這段發話的語音 */
+  private toggleReplay(id: string) {
+    const same = this.replayId === id;
+    this.stopReplay?.();
+    if (same) return;
+    const frames = this.clips.get(id);
+    if (!frames) return;
+    this.engine.resumeIfNeeded();
+    this.replayId = id;
+    this.transcript.setPlaying(id);
+    this.stopReplay = this.engine.playClip(frames, () => {
+      if (this.replayId !== id) return;
+      this.replayId = null;
+      this.stopReplay = undefined;
+      this.transcript.setPlaying(null);
+    });
   }
 
   /** 重新偵測麥克風（需在點擊事件中呼叫，部分瀏覽器才會再次詢問權限） */

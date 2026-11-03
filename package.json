@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite build && vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p src/worker/tsconfig.json",
-    "test": "node --test --experimental-strip-types src/shared/*.test.ts src/client/*.test.ts",
+    "test": "node --test --experimental-strip-types src/shared/*.test.ts src/client/*.test.ts src/worker/*.test.ts",
     "deploy": "vite build && wrangler deploy"
   },
   "devDependencies": {
