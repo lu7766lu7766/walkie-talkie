@@ -591,3 +591,34 @@ input[type='checkbox']:disabled + span {
   flex: none;
   padding: 10px 12px;
 }
+
+/* ---------- 邀請資訊 ---------- */
+
+.invite-panel {
+  gap: 14px;
+}
+
+.invite-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 10px;
+  align-items: center;
+}
+
+.invite-label {
+  grid-column: 1 / -1;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.invite-value {
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 14px;
+  word-break: break-all;
+  user-select: all;
+  -webkit-user-select: all;
+}

@@ -65,10 +65,24 @@
     <main id="room-view" class="view room" hidden>
       <header class="topbar">
         <span id="status-dot" class="dot"></span>
-        <button id="room-code-btn" class="room-name" title="點一下複製邀請連結">房間 <span id="room-code"></span> 🔗</button>
+        <button id="room-code-btn" class="room-name" title="顯示房間代碼與邀請連結" aria-expanded="false" aria-controls="invite-panel">房間 <span id="room-code"></span> 🔗</button>
         <button id="share-btn" class="ghost small">邀請</button>
         <button id="leave-btn" class="ghost small">退出</button>
       </header>
+
+      <section id="invite-panel" class="card invite-panel" hidden>
+        <div class="invite-item">
+          <span class="invite-label">房間代碼</span>
+          <code id="room-token" class="invite-value"></code>
+          <button id="copy-token" class="ghost small">複製房間代碼</button>
+        </div>
+        <div class="invite-item">
+          <span class="invite-label">邀請連結</span>
+          <code id="room-link" class="invite-value"></code>
+          <button id="copy-link" class="ghost small">複製邀請連結</button>
+        </div>
+        <p class="hint">對方點邀請連結就能加入；也可以在大廳貼上邀請連結或房間代碼加入。只有拿到這些的人進得來。</p>
+      </section>
 
       <section id="speaker-banner" class="banner" data-state="offline" aria-live="polite">連線中…</section>
 

@@ -111,13 +111,18 @@ export class Room implements PttHandlers {
     this.conn.connect();
 
     $('room-code').textContent = roomLabel(this.code);
+    $('room-token').textContent = this.code;
+    $('room-link').textContent = roomUrl(this.code);
+    this.toggleInvitePanel(false);
 
     this.cleanups.push(
       bindScreenButton($('ptt'), this),
       bindKeyboard(() => settings.key, this),
       listen($('leave-btn'), 'click', () => this.leave()),
       listen($('share-btn'), 'click', () => this.share()),
-      listen($('room-code-btn'), 'click', () => this.copyLink()),
+      listen($('room-code-btn'), 'click', () => this.toggleInvitePanel()),
+      listen($('copy-token'), 'click', () => void this.copyToken()),
+      listen($('copy-link'), 'click', () => void this.copyLink()),
       listen($('mic-retry'), 'click', () => void this.retryMic()),
       // 任何互動都順便喚醒被系統暫停的 AudioContext（iOS 來電、切到背景後常見）
       listen(
@@ -583,14 +588,19 @@ export class Room implements PttHandlers {
     }
   }
 
-  private async copyLink() {
-    try {
-      await navigator.clipboard.writeText(roomUrl(this.code));
-      toast('已複製邀請連結，傳給要加入的人');
-    } catch {
-      // 無法存取剪貼簿（例如沒有權限）：讓使用者自己複製
-      prompt('複製這個邀請連結，傳給要加入的人：', roomUrl(this.code));
-    }
+  /** 點標題的「房間 xxxx 🔗」展開／收合房間代碼與邀請連結 */
+  private toggleInvitePanel(open = $('invite-panel').hidden) {
+    $('invite-panel').hidden = !open;
+    $('room-code-btn').setAttribute('aria-expanded', String(open));
+  }
+
+  private copyLink() {
+    return copyText(roomUrl(this.code), '已複製邀請連結，傳給要加入的人', '複製這個邀請連結，傳給要加入的人：');
+  }
+
+  /** 只複製房間代碼：對方可以在大廳貼上加入（給從主畫面 App 開啟的人） */
+  private copyToken() {
+    return copyText(this.code, '已複製房間代碼，對方在大廳貼上就能加入', '複製這個房間代碼，對方在大廳貼上就能加入：');
   }
 
   /** 保持螢幕常亮：iPhone 鎖屏後無法發話、收聽也不保證持續，開著最穩定 */
@@ -607,5 +617,15 @@ export class Room implements PttHandlers {
   private async releaseWakeLock() {
     await this.wakeLock?.release().catch(() => {});
     this.wakeLock = undefined;
+  }
+}
+
+async function copyText(text: string, done: string, fallbackPrompt: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(done);
+  } catch {
+    // 無法存取剪貼簿（例如沒有權限）：讓使用者自己複製
+    prompt(fallbackPrompt, text);
   }
 }
