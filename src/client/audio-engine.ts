@@ -1,8 +1,6 @@
 import { AUDIO_SAMPLE_RATE, CODEC_MULAW_16K, RELAY_HEADER_BYTES } from '../shared/protocol';
 import { MULAW_TO_FLOAT } from '../shared/mulaw';
 import workletUrl from './capture.worklet.ts?worker&url';
-import { BackgroundPlayer } from './background-player';
-import { isIos } from './pwa';
 import rnnoiseUrl from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url';
 import rnnoiseSimdUrl from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url';
 
@@ -60,10 +58,6 @@ export class AudioEngine {
   private outputLog: OutputSpan[] = [];
   private clipEnd = 0;
   private stopClip?: () => void;
-  /** 網頁在背景（切到其他 App、鎖螢幕） */
-  private hidden = false;
-  /** 背景時改用一般 <audio> 播放語音（iOS 在背景會暫停 Web Audio） */
-  private readonly bg = new BackgroundPlayer(AUDIO_SAMPLE_RATE);
 
   /**
    * 每 40 ms 產生一個語音框就呼叫（已含 codec 標頭，可直接送出）。
@@ -105,7 +99,6 @@ export class AudioEngine {
     if (this.started) {
       const resumed = this.ctx.resume().catch(() => {});
       this.setBackground(background);
-      this.bg.prime();
       this.setNoise(noise);
       await Promise.all([resumed, this.ensureMic()]);
       return;
@@ -117,7 +110,6 @@ export class AudioEngine {
     // 以下兩個都一定要在手勢的同步階段呼叫，否則會被自動播放限制擋下
     const resumed = this.ctx.resume();
     this.setBackground(background);
-    this.bg.prime();
 
     const [wasm] = await Promise.all([loadRnnoise(), this.ctx.audioWorklet.addModule(workletUrl)]);
     this.capture = new AudioWorkletNode(this.ctx, 'capture', {
@@ -223,7 +215,6 @@ export class AudioEngine {
    */
   stop() {
     this.detach();
-    this.bg.destroy();
     this.mic?.getTracks().forEach((t) => t.stop());
     this.mic = undefined;
     this.source?.disconnect();
@@ -327,25 +318,6 @@ export class AudioEngine {
     return this.ctx.currentTime < Math.max(0, ...this.playHeads.values(), this.toneEnd, this.clipEnd) + 0.3;
   }
 
-  /**
-   * 網頁進入背景／回到畫面。iPhone 在背景會暫停 Web Audio，所以一進背景就改用一般 <audio> 播放；
-   * 其他平台只有在 Web Audio 真的被暫停時才改用。
-   */
-  setHidden(hidden: boolean) {
-    this.hidden = hidden;
-    if (hidden && IOS && this.ctx.state !== 'closed') this.bg.start();
-    else if (!hidden) this.bg.stop();
-  }
-
-  /** 有人說完了：背景播放中累積的語音馬上播出 */
-  flushBackground() {
-    this.bg.flush();
-  }
-
-  private get useBackgroundPlayer(): boolean {
-    return this.hidden && (IOS || this.ctx.state !== 'running');
-  }
-
   setNoise(noise: NoiseOptions) {
     this.capture?.port.postMessage(noise);
   }
@@ -358,22 +330,6 @@ export class AudioEngine {
   playFrame(slot: number, data: ArrayBuffer) {
     const bytes = new Uint8Array(data);
     if (bytes.length <= RELAY_HEADER_BYTES || bytes[0] !== CODEC_MULAW_16K) return;
-
-    if (this.useBackgroundPlayer) {
-      const gain = this.rx.gain.value;
-      const samples = new Float32Array(bytes.length - RELAY_HEADER_BYTES);
-      let peak = 0;
-      for (let i = 0; i < samples.length; i++) {
-        const s = MULAW_TO_FLOAT[bytes[i + RELAY_HEADER_BYTES]];
-        samples[i] = s * gain;
-        if (s > peak) peak = s;
-      }
-      this.playHeads.delete(slot);
-      this.bg.start();
-      this.bg.push(slot, samples);
-      this.onRxLevel(peak);
-      return;
-    }
 
     const now = this.ctx.currentTime;
     let head = this.playHeads.get(slot) ?? 0;
@@ -493,8 +449,6 @@ export class AudioEngine {
     this.toneEnd = Math.max(this.toneEnd, t);
   }
 }
-
-const IOS = isIos();
 
 /** 下載 RNNoise WASM（支援 SIMD 的瀏覽器用較快的版本）；失敗就不使用 AI 降噪 */
 async function loadRnnoise(): Promise<ArrayBuffer | null> {
