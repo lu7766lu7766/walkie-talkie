@@ -68,6 +68,8 @@ export class AudioEngine {
   aiReady = false;
   /** 最近一次取得麥克風失敗的原因（成功時為 null） */
   micError: unknown = null;
+  /** 離開畫面時暫時關掉了麥克風（回到畫面時重新開啟） */
+  micSuspended = false;
   /** 麥克風可用狀態改變時呼叫（取得成功、失敗、被系統收走） */
   onMicChange: () => void = () => {};
   /** 播放端音量（0~1），給 UI 做音量動畫 */
@@ -103,8 +105,7 @@ export class AudioEngine {
     }
 
     // iOS Safari：讓網頁聲音不受靜音鍵影響，並允許同時錄放
-    const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
-    if (session) session.type = 'play-and-record';
+    setAudioSession('play-and-record');
 
     // 以下兩個都一定要在手勢的同步階段呼叫，否則會被自動播放限制擋下
     const resumed = this.ctx.resume();
@@ -168,6 +169,39 @@ export class AudioEngine {
     return max;
   }
 
+  /**
+   * 離開畫面：關掉麥克風（系統的麥克風指示會消失），播放照常，背景仍聽得到別人說話。
+   * iOS 同時把音訊模式從「錄放」改成「播放」，麥克風指示才會收起，也比較能在背景繼續播放。
+   */
+  suspendMic() {
+    if (this.ctx.state === 'closed') return;
+    this.micSuspended = true;
+    this.mic?.getTracks().forEach((t) => t.stop());
+    this.mic = undefined;
+    this.source?.disconnect();
+    this.source = undefined;
+    setAudioSession('playback');
+    this.onMicChange();
+  }
+
+  /** 回到畫面：重新開啟麥克風（瀏覽器已允許時自動開，否則等使用者按發話鍵） */
+  async resumeMic() {
+    const wasSuspended = this.micSuspended;
+    this.resumeMicSession();
+    await this.ensureMic(true);
+    // 瀏覽器沒有「一律允許」麥克風，不能自動重開：畫面上提示按發話鍵重新開啟
+    if (wasSuspended && !this.micLive && !this.micError) {
+      this.micError = new DOMException('離開畫面時暫停', 'PausedError');
+      this.onMicChange();
+    }
+  }
+
+  private resumeMicSession() {
+    if (!this.micSuspended) return;
+    this.micSuspended = false;
+    setAudioSession('play-and-record');
+  }
+
   /** 麥克風是否正在運作 */
   get micLive(): boolean {
     return !!this.mic?.getAudioTracks().some((t) => t.readyState === 'live');
@@ -192,8 +226,7 @@ export class AudioEngine {
     this.output.load();
     if (this.ctx.state !== 'closed') void this.ctx.close().catch(() => {});
     // iOS：把音訊模式從「錄放」還回預設，系統才會收起麥克風指示
-    const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
-    if (session) session.type = 'auto';
+    setAudioSession('auto');
     if ('mediaSession' in navigator) {
       navigator.mediaSession.metadata = null;
       navigator.mediaSession.playbackState = 'none';
@@ -229,6 +262,9 @@ export class AudioEngine {
    */
   ensureMic(auto = false): Promise<void> {
     if (this.micLive || this.ctx.state === 'closed') return Promise.resolve();
+    // 離開畫面期間不自動重開（使用者明確要求，例如按發話鍵，才開）
+    if (auto && this.micSuspended) return Promise.resolve();
+    if (!auto) this.resumeMicSession();
     if (auto) {
       return this.reopening ?? micPermission().then((state) => {
         const askedBefore = isPermissionError(this.micError);
@@ -255,10 +291,10 @@ export class AudioEngine {
     const mic = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
-    // 等待授權的期間使用者已經退出房間：拿到的麥克風馬上關掉
-    if (this.ctx.state === 'closed') {
+    // 等待授權的期間使用者已經退出房間、或離開了畫面：拿到的麥克風馬上關掉
+    if (this.ctx.state === 'closed' || this.micSuspended) {
       mic.getTracks().forEach((t) => t.stop());
-      throw new DOMException('麥克風已關閉', 'AbortError');
+      throw new DOMException('麥克風已暫停', 'PausedError');
     }
     this.mic?.getTracks().forEach((t) => t.stop());
     this.source?.disconnect();
@@ -459,4 +495,10 @@ export function micPromptCount(): number {
   } catch {
     return 0;
   }
+}
+
+/** iOS Safari 的音訊模式（其他瀏覽器沒有這個 API，什麼都不做） */
+function setAudioSession(type: 'play-and-record' | 'playback' | 'auto') {
+  const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+  if (session) session.type = type;
 }
