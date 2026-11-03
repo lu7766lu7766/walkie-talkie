@@ -4,7 +4,7 @@ export type Mode = 'hold' | 'toggle';
 
 export interface Settings {
   name: string;
-  /** 即時監聽：麥克風持續開著，偵測到說話就自動傳送 */
+  /** 即時監聽：偵測到說話就自動傳送（預設關閉，按住發話鍵才傳送） */
   vox: boolean;
   /** AI 降噪（RNNoise） */
   denoise: boolean;
@@ -25,9 +25,19 @@ export interface Settings {
   keepScreenOn: boolean;
 }
 
-export const settings: Settings = {
+/**
+ * 設定格式版本。舊版會把所有設定（含預設值）存進 localStorage，
+ * 調整預設值時用它把舊使用者的值一次性改成新預設：
+ *   2：即時監聽改為預設關閉
+ */
+const SETTINGS_VERSION = 2;
+
+const stored = readJson<Partial<Settings> & { version?: number }>('wt-settings', {});
+if ((stored.version ?? 1) < 2) delete stored.vox;
+
+export const settings: Settings & { version: number } = {
   name: '',
-  vox: true,
+  vox: false,
   denoise: true,
   voiceGate: true,
   noiseGateDb: -45,
@@ -39,7 +49,8 @@ export const settings: Settings = {
   beeps: true,
   background: true,
   keepScreenOn: isIos(),
-  ...readJson('wt-settings', {}),
+  ...stored,
+  version: SETTINGS_VERSION,
 };
 
 export const saveSettings = () => writeJson('wt-settings', settings);
