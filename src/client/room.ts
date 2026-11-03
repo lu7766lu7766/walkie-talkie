@@ -12,6 +12,7 @@ import {
   type PttHandlers,
   type PttSource,
 } from './ptt-inputs';
+import { describeMicError } from './mic-error';
 import { API_ORIGIN, roomIdFor, roomLabel, roomUrl } from './room-id';
 import { clientId, saveSettings, settings, type Mode } from './settings';
 import { VoiceDetector } from './vad';
@@ -69,6 +70,7 @@ export class Room implements PttHandlers {
   ) {
     this.headset = new HeadsetButton(this);
     engine.onFrame = (frame, level, rms, prob) => this.onFrame(frame, level, rms, prob);
+    engine.onMicChange = () => this.render();
     engine.onRxLevel = (level) => setLevel(level);
     engine.beeps = settings.beeps;
     engine.setVolume(settings.volume);
@@ -116,6 +118,7 @@ export class Room implements PttHandlers {
       listen($('leave-btn'), 'click', () => this.leave()),
       listen($('share-btn'), 'click', () => this.share()),
       listen($('room-code-btn'), 'click', () => this.copyLink()),
+      listen($('mic-retry'), 'click', () => void this.retryMic()),
       // 任何互動都順便喚醒被系統暫停的 AudioContext（iOS 來電、切到背景後常見）
       listen(
         window,
@@ -177,6 +180,12 @@ export class Room implements PttHandlers {
 
   private beginTalk(preRoll: ArrayBuffer[]) {
     if (this.talk !== 'idle' || !this.online) return;
+    if (!this.engine.micLive) {
+      // 沒有麥克風：只能收聽。順便再試一次（使用者可能剛接上麥克風）
+      this.held.clear();
+      void this.retryMic();
+      return;
+    }
     this.talk = 'requesting';
     this.pending = [...preRoll];
     this.conn.send({ t: 'talk' });
@@ -359,13 +368,19 @@ export class Room implements PttHandlers {
     } else if (otherTalking) {
       [text, state] = [`🔊 ${this.speaker!.name} 正在說話`, 'receiving'];
     } else {
-      [text, state] = [settings.vox ? '🎙️ 即時監聽中，說話就會自動傳送' : '房間空閒', 'idle'];
+      const listening = settings.vox && this.engine.micLive;
+      [text, state] = [listening ? '🎙️ 即時監聽中，說話就會自動傳送' : '房間空閒', 'idle'];
     }
     banner.textContent = text;
     banner.dataset.state = state;
     this.updateMediaStatus(state);
+    // 沒有麥克風時只能收聽：發話鍵顯示原因，別人說話時仍照常顯示
+    const noMic = !this.engine.micLive;
+    $('mic-notice').hidden = !noMic;
+    if (noMic) $('mic-notice-text').textContent = describeMicError(this.engine.micError);
+    if (noMic && state === 'idle') state = 'nomic';
     ptt.dataset.state = state;
-    label.textContent =
+    label.textContent = state === 'nomic' ? '沒有麥克風・只能收聽' :
       state === 'talking'
         ? this.byVox
           ? '傳送中'
@@ -380,7 +395,7 @@ export class Room implements PttHandlers {
               ? '按一下說話'
               : '按住說話';
     $<HTMLInputElement>('vox').checked = settings.vox;
-    $('vox-meter-row').hidden = !settings.vox && !this.noiseOpen;
+    $('vox-meter-row').hidden = noMic || (!settings.vox && !this.noiseOpen);
 
     $('member-count').textContent = String(this.members.length);
     const list = $('members');
@@ -392,6 +407,16 @@ export class Room implements PttHandlers {
         return li;
       }),
     );
+  }
+
+  /** 重新偵測麥克風（需在點擊事件中呼叫，部分瀏覽器才會再次詢問權限） */
+  private async retryMic() {
+    const button = $<HTMLButtonElement>('mic-retry');
+    button.disabled = true;
+    await this.engine.ensureMic();
+    button.disabled = false;
+    toast(this.engine.micLive ? '🎙️ 已偵測到麥克風，可以說話了' : '還是找不到可用的麥克風');
+    this.render();
   }
 
   /** 即時監聽的麥克風音量表：綠色是目前音量，白線是觸發門檻 */

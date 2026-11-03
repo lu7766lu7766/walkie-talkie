@@ -24,8 +24,13 @@ export function roomPath(token: string): string {
   return `/r/${token}`;
 }
 
+/**
+ * 分享用的邀請網址。
+ * openExternalBrowser=1 是 LINE 的官方參數：在 LINE 裡點連結會直接用手機預設瀏覽器開啟
+ * （LINE 內建瀏覽器常常無法使用麥克風）；其他 App 會忽略這個參數。
+ */
 export function roomUrl(token: string): string {
-  return `${location.origin}${roomPath(token)}`;
+  return `${location.origin}${roomPath(token)}?openExternalBrowser=1`;
 }
 
 /** 畫面上顯示的短代號（代碼前 4 碼），方便大家口頭確認是不是同一個房間；只靠它無法進入房間 */

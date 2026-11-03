@@ -48,6 +48,10 @@ export class AudioEngine {
   onFrame: (frame: ArrayBuffer, level: number, rms: number, prob: number) => void = () => {};
   /** AI 降噪是否載入成功 */
   aiReady = false;
+  /** 最近一次取得麥克風失敗的原因（成功時為 null） */
+  micError: unknown = null;
+  /** 麥克風可用狀態改變時呼叫（取得成功、失敗、被系統收走） */
+  onMicChange: () => void = () => {};
   /** 播放端音量（0~1），給 UI 做音量動畫 */
   onRxLevel: (level: number) => void = () => {};
   beeps = true;
@@ -66,6 +70,7 @@ export class AudioEngine {
 
   /**
    * 必須在使用者手勢（點擊）中呼叫：解鎖播放並取得麥克風權限。
+   * 取不到麥克風（電腦沒接、權限被拒）不會失敗，可以先進房間收聽，原因記在 micError。
    *
    * 同一個網頁只會真正開一次麥克風：換房間、關閉即時監聽都沿用同一條麥克風串流，
    * 因為部分手機瀏覽器關掉麥克風後再開會失敗，或拿到沒有聲音的串流；
@@ -110,7 +115,7 @@ export class AudioEngine {
     // 輸出是靜音，只是為了讓節點持續被音訊圖驅動
     this.capture.connect(this.ctx.destination);
 
-    await this.openMic();
+    await this.ensureMic();
     await Promise.all([resumed, ready]);
     // iOS 取得麥克風時會切換 audio session，AudioContext 可能被中斷，再喚醒一次
     if (this.ctx.state !== 'running') await this.ctx.resume().catch(() => {});
@@ -121,6 +126,7 @@ export class AudioEngine {
   detach() {
     this.onFrame = () => {};
     this.onRxLevel = () => {};
+    this.onMicChange = () => {};
     this.playHead = 0;
   }
 
@@ -165,14 +171,20 @@ export class AudioEngine {
   ensureMic(): Promise<void> {
     if (this.micLive || this.ctx.state === 'closed') return Promise.resolve();
     this.reopening ??= this.openMic()
-      .catch(() => {
-        // 權限被收回或系統暫時不給，等下次互動或回到前景再試
-      })
-      .finally(() => (this.reopening = undefined));
+      .then(
+        () => (this.micError = null),
+        // 沒有麥克風、權限被拒或系統暫時不給：記下原因，等下次互動或回到前景再試
+        (err) => (this.micError = err),
+      )
+      .finally(() => {
+        this.reopening = undefined;
+        this.onMicChange();
+      });
     return this.reopening;
   }
 
   private async openMic() {
+    if (!navigator.mediaDevices?.getUserMedia) throw new TypeError('getUserMedia is not supported');
     const mic = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
@@ -183,7 +195,10 @@ export class AudioEngine {
     this.source.connect(this.capture!);
     // 串流被系統結束時，稍後自動重試（需要使用者操作的瀏覽器會在下次點擊時重試）
     for (const track of mic.getAudioTracks()) {
-      track.addEventListener('ended', () => setTimeout(() => void this.ensureMic(), 1000));
+      track.addEventListener('ended', () => {
+        this.onMicChange();
+        setTimeout(() => void this.ensureMic(), 1000);
+      });
     }
   }
 

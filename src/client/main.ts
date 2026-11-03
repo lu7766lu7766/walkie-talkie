@@ -2,6 +2,7 @@ import './style.css';
 import { AudioEngine } from './audio-engine';
 import { $, listen } from './dom';
 import { setupPwa } from './pwa';
+import { isInAppBrowser } from './mic-error';
 import { Room } from './room';
 import { fetchRoomInfo, newRoomToken, roomLabel, roomPath, roomTokenFromPath } from './room-id';
 import { saveSettings, settings } from './settings';
@@ -129,12 +130,7 @@ async function enterRoom(code: string, name: string, errorEl: HTMLElement) {
     // 啟動失敗（例如拒絕麥克風權限）：整個丟掉，下次重新建立
     engine?.stop();
     engine = null;
-    setError(
-      errorEl,
-      err instanceof DOMException && err.name === 'NotAllowedError'
-        ? '需要麥克風權限才能使用對講機，請在瀏覽器設定中允許。'
-        : `無法進入房間：${(err as Error).message}`,
-    );
+    setError(errorEl, `無法進入房間：${(err as Error).message}`);
     return;
   } finally {
     buttons.forEach((b) => (b.disabled = false));
@@ -174,6 +170,8 @@ function setError(el: HTMLElement, message?: string) {
   el.textContent = message ?? '';
   el.hidden = !message;
 }
+
+if (isInAppBrowser()) document.querySelectorAll<HTMLElement>('.inapp-hint').forEach((el) => (el.hidden = false));
 
 addEventListener('popstate', route);
 route();

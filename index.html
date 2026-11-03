@@ -28,6 +28,7 @@
         <p class="hint">建立後把邀請連結分享給要加入的人。要加入別人的房間，請打開對方傳給你的邀請連結。</p>
       </section>
       <p id="lobby-error" class="error" hidden></p>
+      <p class="inapp-hint hint" hidden>⚠️ 你正在 App 的內建瀏覽器中，麥克風可能無法使用。建議點右上角選單，改用 Chrome 或 Safari 開啟。</p>
       <p id="mic-status" class="hint" hidden>
         🎙️ 麥克風維持開啟中，進入房間不用重新授權。
         <button id="mic-release" class="link">關閉麥克風</button>
@@ -50,6 +51,7 @@
         <button type="submit" class="primary">進入房間</button>
       </form>
       <p id="invite-error" class="error" hidden></p>
+      <p class="inapp-hint hint" hidden>⚠️ 你正在 App 的內建瀏覽器中，麥克風可能無法使用。建議點右上角選單，改用 Chrome 或 Safari 開啟這個連結。</p>
       <button id="invite-lobby-btn" class="ghost">回到大廳</button>
     </main>
 
@@ -62,6 +64,12 @@
       </header>
 
       <section id="speaker-banner" class="banner" data-state="offline" aria-live="polite">連線中…</section>
+
+      <section id="mic-notice" class="card notice" hidden>
+        <strong>🎙️ 沒有可用的麥克風，目前只能收聽</strong>
+        <p id="mic-notice-text"></p>
+        <button id="mic-retry" class="ghost small">重新偵測麥克風</button>
+      </section>
 
       <section class="card vox">
         <label class="switch-row">

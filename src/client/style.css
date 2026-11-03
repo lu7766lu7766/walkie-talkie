@@ -526,3 +526,27 @@ input[type='checkbox']:disabled + span {
   text-decoration: underline;
   font-size: inherit;
 }
+
+/* ---------- 沒有麥克風 ---------- */
+
+.notice {
+  border: 1px solid var(--amber);
+  gap: 8px;
+}
+
+.notice p {
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.notice button {
+  align-self: flex-start;
+}
+
+.ptt[data-state='nomic'] {
+  --face: #444a5e;
+  --ring: var(--amber);
+  color: var(--text);
+  font-size: 16px;
+}
