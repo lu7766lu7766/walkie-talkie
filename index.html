@@ -68,9 +68,6 @@
 
       <footer class="entry-footer">
         <p class="inapp-hint warn" hidden>你正在 App 的內建瀏覽器中，麥克風可能無法使用，建議改用 Chrome 或 Safari 開啟。</p>
-        <p id="mic-status" class="hint center" hidden>
-          麥克風維持開啟中，進房間不用重新授權 · <button id="mic-release" class="link">關閉麥克風</button>
-        </p>
         <button id="install-btn" class="btn ghost" hidden>安裝成 App</button>
         <p id="ios-install-hint" class="hint center" hidden>iPhone／iPad：Safari「分享」→「加入主畫面」即可安裝。</p>
       </footer>
@@ -104,7 +101,7 @@
     <!-- ================================================================ 房間 -->
     <main id="room-view" class="view room" hidden>
       <header class="topbar">
-        <button id="leave-btn" class="icon-btn" title="退出房間" aria-label="退出房間"><svg class="icon"><use href="#i-back" /></svg></button>
+        <button id="leave-btn" class="leave-btn" title="退出房間並關閉麥克風"><svg class="icon"><use href="#i-back" /></svg>退出</button>
         <button id="room-code-btn" class="room-title" title="成員" aria-haspopup="dialog">
           <strong id="room-topic">房間</strong>
           <small><span id="status-dot" class="dot"></span><span id="room-code-wrap" hidden><span id="room-code"></span> · </span><span id="member-count">0</span> 人在線<span id="room-role" hidden> · 你是房主</span></small>

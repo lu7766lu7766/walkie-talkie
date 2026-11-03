@@ -229,7 +229,7 @@ export class Room implements PttHandlers {
     this.cleanups.splice(0).forEach((fn) => fn());
     this.conn.close();
     this.headset.disable();
-    // 只解除連結，麥克風保持開啟（部分手機關掉後再開會失敗）
+    // 解除與房間的連結；麥克風與播放由 main.ts 接著完全釋放
     this.engine.detach();
     clearInterval(this.talkTimer);
     clearTimeout(this.stopTimer);

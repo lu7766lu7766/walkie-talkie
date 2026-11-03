@@ -1318,3 +1318,28 @@ kbd {
   width: 18px;
   height: 18px;
 }
+
+/* ---------- 退出按鈕（退出房間並完全釋放麥克風） ---------- */
+
+.leave-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  height: 36px;
+  padding: 0 12px 0 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.leave-btn .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.leave-btn:hover {
+  background: var(--line);
+}

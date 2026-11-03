@@ -90,9 +90,8 @@ export class AudioEngine {
    * 必須在使用者手勢（點擊）中呼叫：解鎖播放並取得麥克風權限。
    * 取不到麥克風（電腦沒接、權限被拒）不會失敗，可以先進房間收聽，原因記在 micError。
    *
-   * 同一個網頁只會真正開一次麥克風：換房間、關閉即時監聽都沿用同一條麥克風串流，
-   * 因為部分手機瀏覽器關掉麥克風後再開會失敗，或拿到沒有聲音的串流；
-   * iOS 也限制同一頁能建立的 AudioContext 數量。
+   * 在房間裡只開一次麥克風：關閉自動偵測（即時監聽）時也不關，
+   * 因為部分手機瀏覽器關掉麥克風後再開會失敗，或拿到沒有聲音的串流。退出房間時才由 stop() 完全釋放。
    */
   async start(background: boolean, noise: NoiseOptions) {
     if (this.started) {
@@ -174,13 +173,31 @@ export class AudioEngine {
     return !!this.mic?.getAudioTracks().some((t) => t.readyState === 'live');
   }
 
-  /** 完全釋放麥克風與音訊（使用者在大廳主動關閉，或啟動失敗時） */
+  /**
+   * 完全釋放麥克風與音訊（退出房間、或啟動失敗時）。
+   * 關掉麥克風、背景播放用的 <audio>、AudioContext 與鎖定畫面的媒體資訊，
+   * 系統就不會再把網頁當成「正在使用麥克風／播放媒體」而讓它在背景一直執行。
+   * 釋放後這個物件不能再用，下次進房間建立新的。
+   */
   stop() {
+    this.detach();
     this.mic?.getTracks().forEach((t) => t.stop());
+    this.mic = undefined;
+    this.source?.disconnect();
+    this.capture?.port.close();
     this.capture?.disconnect();
     this.output.pause();
     this.output.srcObject = null;
-    void this.ctx.close();
+    this.output.removeAttribute('src');
+    this.output.load();
+    if (this.ctx.state !== 'closed') void this.ctx.close().catch(() => {});
+    // iOS：把音訊模式從「錄放」還回預設，系統才會收起麥克風指示
+    const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+    if (session) session.type = 'auto';
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = 'none';
+    }
   }
 
   /** 切換背景播放。開啟時聲音經由 <audio> 元素輸出，關閉時直接輸出到喇叭。 */
@@ -238,6 +255,11 @@ export class AudioEngine {
     const mic = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
+    // 等待授權的期間使用者已經退出房間：拿到的麥克風馬上關掉
+    if (this.ctx.state === 'closed') {
+      mic.getTracks().forEach((t) => t.stop());
+      throw new DOMException('麥克風已關閉', 'AbortError');
+    }
     this.mic?.getTracks().forEach((t) => t.stop());
     this.source?.disconnect();
     this.mic = mic;

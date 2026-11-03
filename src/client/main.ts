@@ -19,10 +19,15 @@ import { forgetRoom, myRooms, rememberRoom, touchRoom } from './my-rooms';
 
 let room: Room | null = null;
 /**
- * 整個網頁共用一個音訊引擎：第一次進房間時開麥克風，之後換房間、回到大廳都不關，
- * 避免部分手機瀏覽器關掉麥克風後再也打不開。只有使用者在大廳按「關閉麥克風」才釋放。
+ * 音訊引擎（麥克風、播放、背景播放）：進房間時建立，退出房間時完全釋放，
+ * 回到大廳後麥克風就關掉，系統也不會再把網頁當成「正在播放媒體」而讓它在背景一直執行。
  */
 let engine: AudioEngine | null = null;
+
+function releaseAudio() {
+  engine?.stop();
+  engine = null;
+}
 
 const views = ['lobby-view', 'invite-view', 'room-view'] as const;
 function show(view: (typeof views)[number]) {
@@ -55,7 +60,6 @@ function showLobby(message?: string) {
   lobbyTopic.value = '';
   joinInput.value = '';
   setError(lobbyError, message);
-  renderMicStatus();
   show('lobby-view');
   void renderMyRooms();
 }
@@ -113,16 +117,6 @@ setInterval(() => {
 }, 20_000);
 document.addEventListener('visibilitychange', () => {
   if (!room && !$('lobby-view').hidden && document.visibilityState === 'visible') void renderMyRooms();
-});
-
-function renderMicStatus() {
-  $('mic-status').hidden = !engine;
-}
-
-listen($('mic-release'), 'click', () => {
-  engine?.stop();
-  engine = null;
-  renderMicStatus();
 });
 
 listen($('create-btn'), 'click', () => enterFromLobby(newRoomToken(), true));
@@ -257,6 +251,7 @@ async function enterRoom(code: string, name: string, errorEl: HTMLElement, creat
 
 function onLeave(message?: string) {
   room = null;
+  releaseAudio();
   // 按「退出」離開：回到大廳的網址；按上一頁離開：網址已經是大廳了
   if (roomTokenFromPath(location.pathname)) history.pushState(null, '', '/');
   showLobby(message);
