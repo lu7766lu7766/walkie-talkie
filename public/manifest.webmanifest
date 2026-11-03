@@ -8,6 +8,8 @@
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#1f2330",
+  "launch_handler": { "client_mode": ["navigate-existing", "auto"] },
+  "handle_links": "preferred",
   "theme_color": "#1f2330",
   "icons": [
     { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },

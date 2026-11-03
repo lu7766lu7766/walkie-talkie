@@ -20,6 +20,19 @@ export function roomTokenFromPath(pathname: string): string | null {
   return pathname.match(ROOM_PATH_RE)?.[1] ?? null;
 }
 
+const TOKEN_RE = new RegExp(`^[A-Za-z0-9_-]{${TOKEN_LENGTH}}$`);
+const TOKEN_IN_TEXT_RE = new RegExp(`/r/([A-Za-z0-9_-]{${TOKEN_LENGTH}})(?![A-Za-z0-9_-])`);
+
+/**
+ * 從使用者貼上的內容找出房間代碼：完整邀請網址、LINE 訊息整段文字（裡面含網址），或代碼本身。
+ * 給從主畫面 PWA 開啟的人用：iPhone 點邀請連結一定會跑到 Safari，只能複製連結回 App 貼上。
+ */
+export function parseRoomInput(text: string): string | null {
+  const trimmed = text.trim();
+  if (TOKEN_RE.test(trimmed)) return trimmed;
+  return trimmed.match(TOKEN_IN_TEXT_RE)?.[1] ?? null;
+}
+
 export function roomPath(token: string): string {
   return `/r/${token}`;
 }

@@ -25,7 +25,14 @@
           <small class="field-hint">修改後自動儲存，下次開啟也會沿用</small>
         </label>
         <button id="create-btn" class="primary">＋ 建立新房間</button>
-        <p class="hint">建立後把邀請連結分享給要加入的人。要加入別人的房間，請打開對方傳給你的邀請連結。</p>
+        <p class="hint">建立後把邀請連結分享給要加入的人。</p>
+        <div class="divider"><span>加入別人的房間</span></div>
+        <form id="join-form" class="join-row" novalidate>
+          <input id="join-input" placeholder="邀請連結或房間代碼" aria-label="邀請連結或房間代碼" autocomplete="off" autocapitalize="off" spellcheck="false" />
+          <button id="paste-btn" type="button" class="ghost" title="從剪貼簿貼上">📋 貼上</button>
+          <button type="submit" class="ghost">加入</button>
+        </form>
+        <p class="hint">直接點對方傳來的邀請連結也可以。從主畫面 App 開啟時，點連結可能會跑到瀏覽器，這時在聊天 App 長按連結「複製」，回到這裡按「貼上」即可。</p>
       </section>
       <p id="lobby-error" class="error" hidden></p>
       <p class="inapp-hint hint" hidden>⚠️ 你正在 App 的內建瀏覽器中，麥克風可能無法使用。建議點右上角選單，改用 Chrome 或 Safari 開啟。</p>

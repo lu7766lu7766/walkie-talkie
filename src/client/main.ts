@@ -4,13 +4,13 @@ import { $, listen } from './dom';
 import { setupPwa } from './pwa';
 import { isInAppBrowser } from './mic-error';
 import { Room } from './room';
-import { fetchRoomInfo, newRoomToken, roomLabel, roomPath, roomTokenFromPath } from './room-id';
+import { fetchRoomInfo, newRoomToken, parseRoomInput, roomLabel, roomPath, roomTokenFromPath } from './room-id';
 import { saveSettings, settings } from './settings';
 
 /**
  * 畫面與網址：
- *   /            大廳：編輯暱稱、建立新房間。大廳不列出任何房間，也不能輸入號碼加入，
- *                要進入別人的房間只能打開對方分享的邀請網址（避免有人亂入）
+ *   /            大廳：編輯暱稱、建立新房間、貼上邀請連結加入。大廳不列出任何房間，
+ *                房間代碼是 128 bit 隨機值，只有拿到邀請連結（或代碼）的人進得來（避免有人亂入）
  *   /r/<代碼>    邀請頁：點分享連結進來的人看到這頁，按一下就進入房間
  *                （瀏覽器規定要使用者點一下才能開麥克風與播放聲音，所以無法完全自動進入）
  * 進入房間後網址維持 /r/<代碼>，按「退出」或瀏覽器的上一頁回到大廳。
@@ -43,10 +43,12 @@ function route() {
 // ---------------------------------------------------------------- 大廳
 
 const lobbyName = $<HTMLInputElement>('lobby-name');
+const joinInput = $<HTMLInputElement>('join-input');
 const lobbyError = $('lobby-error');
 
 function showLobby(message?: string) {
   lobbyName.value = settings.name;
+  joinInput.value = '';
   setError(lobbyError, message);
   renderMicStatus();
   show('lobby-view');
@@ -62,15 +64,51 @@ listen($('mic-release'), 'click', () => {
   renderMicStatus();
 });
 
-listen($('create-btn'), 'click', () => {
+listen($('create-btn'), 'click', () => enterFromLobby(newRoomToken()));
+
+listen($('join-form'), 'submit', (e) => {
+  e.preventDefault();
+  joinFromInput();
+});
+
+/** 從剪貼簿貼上邀請連結，看得懂就直接加入 */
+listen($('paste-btn'), 'click', async () => {
+  try {
+    joinInput.value = (await navigator.clipboard.readText()).trim();
+  } catch {
+    // 瀏覽器不允許讀剪貼簿：請使用者自己長按輸入框貼上
+    setError(lobbyError, '無法讀取剪貼簿，請長按輸入框選「貼上」。');
+    joinInput.focus();
+    return;
+  }
+  joinFromInput();
+});
+
+function joinFromInput() {
+  const token = parseRoomInput(joinInput.value);
+  if (!token) {
+    setError(
+      lobbyError,
+      joinInput.value.trim()
+        ? '看不懂這個連結或代碼，請貼上對方傳來的完整邀請連結。（房間標題上的 4 碼代號只用來確認，不能用來加入）'
+        : '請先貼上邀請連結或房間代碼。',
+    );
+    joinInput.focus();
+    return;
+  }
+  enterFromLobby(token);
+}
+
+/** 必須在點擊事件中同步呼叫（enterRoom 的同步階段會解鎖音訊） */
+function enterFromLobby(token: string) {
   const name = lobbyName.value.trim();
   if (!name) {
     setError(lobbyError, '請先輸入暱稱。');
     lobbyName.focus();
     return;
   }
-  void enterRoom(newRoomToken(), name, lobbyError);
-});
+  void enterRoom(token, name, lobbyError);
+}
 
 // ---------------------------------------------------------------- 邀請頁（點分享連結進來）
 
