@@ -21,6 +21,19 @@ const MAX_LAG_S = 0.6;
 
 type Tone = [freq: number, ms: number];
 
+/**
+ * 回音會比喇叭晚一點進到麥克風（輸出延遲，藍牙耳機可達 0.3 秒），
+ * 查喇叭音量時往前看這麼久。
+ */
+const ECHO_WINDOW_S = 0.4;
+
+/** 喇叭播放紀錄的一筆：這段聲音的播放時間與音量 */
+interface OutputSpan {
+  start: number;
+  end: number;
+  db: number;
+}
+
 export class AudioEngine {
   readonly ctx = new AudioContext({ latencyHint: 'interactive' });
   private readonly master = this.ctx.createGain();
@@ -41,6 +54,8 @@ export class AudioEngine {
   /** 每個發話者（slot）各自的播放排程：多人同時說話時分開緩衝，再由 Web Audio 混音 */
   private readonly playHeads = new Map<number, number>();
   private toneEnd = 0;
+  /** 喇叭播放紀錄（最近一秒），給自動偵測判斷麥克風收到的是不是回音 */
+  private outputLog: OutputSpan[] = [];
   private clipEnd = 0;
   private stopClip?: () => void;
 
@@ -131,6 +146,27 @@ export class AudioEngine {
     this.onRxLevel = () => {};
     this.onMicChange = () => {};
     this.playHeads.clear();
+  }
+
+  private logOutput(start: number, end: number, rms: number) {
+    const cutoff = this.ctx.currentTime - 1;
+    if (this.outputLog.length > 200 || this.outputLog[0]?.end < cutoff) {
+      this.outputLog = this.outputLog.filter((s) => s.end >= cutoff);
+    }
+    this.outputLog.push({ start, end, db: 20 * Math.log10(rms + 1e-9) });
+  }
+
+  /**
+   * 喇叭最近（包含回音延遲）播放的最大音量（dBFS）；沒在播放時回傳 -100。
+   * 自動偵測用它判斷麥克風收到的聲音是回音還是自己在說話。
+   */
+  get recentOutputDb(): number {
+    const now = this.ctx.currentTime;
+    let max = -100;
+    for (const s of this.outputLog) {
+      if (s.start <= now && s.end >= now - ECHO_WINDOW_S && s.db > max) max = s.db;
+    }
+    return max;
   }
 
   /** 麥克風是否正在運作 */
@@ -245,15 +281,18 @@ export class AudioEngine {
     const buffer = this.ctx.createBuffer(1, bytes.length - RELAY_HEADER_BYTES, AUDIO_SAMPLE_RATE);
     const samples = buffer.getChannelData(0);
     let peak = 0;
+    let sum = 0;
     for (let i = 0; i < samples.length; i++) {
       const s = MULAW_TO_FLOAT[bytes[i + RELAY_HEADER_BYTES]];
       samples[i] = s;
+      sum += s * s;
       if (s > peak) peak = s;
     }
     const src = this.ctx.createBufferSource();
     src.buffer = buffer;
     src.connect(this.rx);
     src.start(head);
+    this.logOutput(head, head + buffer.duration, Math.sqrt(sum / samples.length) * this.rx.gain.value);
     this.playHeads.set(slot, head + buffer.duration);
     this.onRxLevel(peak);
   }
@@ -280,6 +319,15 @@ export class AudioEngine {
     const start = this.ctx.currentTime + 0.05;
     src.start(start);
     this.clipEnd = start + buffer.duration;
+    // 重播的聲音也會被麥克風收到：每 40 ms 記一筆音量
+    const chunk = AUDIO_SAMPLE_RATE * 0.04;
+    for (let i = 0; i < samples.length; i += chunk) {
+      let sum = 0;
+      const end = Math.min(samples.length, i + chunk);
+      for (let j = i; j < end; j++) sum += samples[j] * samples[j];
+      const t = start + i / AUDIO_SAMPLE_RATE;
+      this.logOutput(t, t + (end - i) / AUDIO_SAMPLE_RATE, Math.sqrt(sum / (end - i)) * this.rx.gain.value);
+    }
 
     let stopped = false;
     const stop = () => {
@@ -336,6 +384,7 @@ export class AudioEngine {
         osc.connect(gain).connect(this.master);
         osc.start(t);
         osc.stop(t + dur);
+        this.logOutput(t, t + dur, volume * Math.SQRT1_2);
       }
       t += dur;
     }

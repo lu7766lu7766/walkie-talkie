@@ -19,6 +19,8 @@ export interface Settings {
   headset: boolean;
   volume: number;
   beeps: boolean;
+  /** 戴耳機：沒有喇叭回音，別人說話時自動偵測不用提高門檻 */
+  headphones: boolean;
   /** 經由媒體元素播放，讓切到背景、鎖屏後仍能收聽 */
   background: boolean;
   /** 保持螢幕常亮（iPhone 背景執行受限，預設開啟） */
@@ -45,6 +47,7 @@ export const settings: Settings & { version: number } = {
   mode: 'hold',
   key: 'Space',
   headset: true,
+  headphones: false,
   volume: 1,
   beeps: true,
   background: true,

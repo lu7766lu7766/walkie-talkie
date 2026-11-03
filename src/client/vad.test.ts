@@ -83,3 +83,52 @@ test('reset requires a fresh attack', () => {
   assert.equal(vad.update(db(-20)), false);
   assert.equal(vad.update(db(-20)), true);
 });
+
+/** 模擬別人說話時喇叭的音量（像語音一樣有起伏、有停頓） */
+const speechLike = (i: number) => (i % 25 < 18 ? -20 + 6 * Math.sin(i * 0.9) : -100);
+
+test('回音模式：學會回音大小後，回音不觸發，對著麥克風說話可以插話', () => {
+  const vad = new VoiceDetector({ gateDb: -45, voiceThreshold: 0.6 });
+  for (let i = 0; i < 50; i++) vad.update(db(-62), 0.05);
+  // 回音比喇叭小 18 dB（有回音消除），被自動增益放大到 -38 dB 左右，AI 也覺得像人聲
+  let echo = false;
+  for (let i = 0; i < 250; i++) {
+    const ref = speechLike(i);
+    echo = vad.update(ref > -60 ? db(ref - 18) : db(-62), ref > -60 ? 0.9 : 0.05, ref) || echo;
+  }
+  assert.equal(echo, false, '回音被當成說話');
+  assert.ok(vad.erlDb < -12, `應學到回音比喇叭小，實際 ${vad.erlDb.toFixed(1)} dB`);
+  // 喇叭 -20 dB 時自己對著麥克風說話（-12 dB）：160 ms 後觸發
+  const frames = [];
+  for (let i = 0; i < 6; i++) frames.push(vad.update(db(-12), 0.95, -20));
+  assert.deepEqual(frames, [false, false, false, true, true, true]);
+});
+
+test('回音模式：一開始保守，很大聲的回音（沒有回音消除）也不會觸發', () => {
+  const vad = new VoiceDetector({ gateDb: -45, voiceThreshold: 0.6 });
+  for (let i = 0; i < 50; i++) vad.update(db(-62), 0.05);
+  let echo = false;
+  for (let i = 0; i < 250; i++) {
+    const ref = speechLike(i);
+    echo = vad.update(ref > -60 ? db(ref - 3) : db(-62), ref > -60 ? 0.95 : 0.05, ref) || echo;
+  }
+  assert.equal(echo, false);
+});
+
+test('沒有傳喇叭音量（沒人說話）時照一般標準判斷', () => {
+  const vad = new VoiceDetector({ gateDb: -45, voiceThreshold: 0.6 });
+  for (let i = 0; i < 50; i++) vad.update(db(-62), 0.05);
+  let on = false;
+  for (let i = 0; i < 3; i++) on = vad.update(db(-30), 0.9);
+  assert.equal(on, true);
+  assert.equal(vad.strict, false);
+});
+
+test('回音模式：回音消除很好（麥克風幾乎收不到喇叭聲）時，約一秒內就能插話', () => {
+  const vad = new VoiceDetector({ gateDb: -45, voiceThreshold: 0.6 });
+  for (let i = 0; i < 50; i++) vad.update(db(-62), 0.05);
+  for (let i = 0; i < 25; i++) vad.update(db(-62), 0.05, -20);
+  let on = false;
+  for (let i = 0; i < 6; i++) on = vad.update(db(-18), 0.95, -20);
+  assert.equal(on, true, `門檻 ${vad.thresholdDb.toFixed(1)} dB`);
+});

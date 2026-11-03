@@ -348,12 +348,14 @@ export class Room implements PttHandlers {
 
   private runVox(rms: number, prob: number) {
     if (!this.voxActive && this.voxBlocked()) {
-      // 別人在講、或喇叭還在出聲：麥克風收到的多半是喇叭的回音，不能當成自己在說話
       this.vad.reset();
       this.renderMeter();
       return;
     }
-    const speaking = this.vad.update(rms, prob);
+    // 喇叭有聲音時（別人在說話、重播、提示音），麥克風也會收到回音：把喇叭的音量交給語音偵測，
+    // 它會學習回音有多大，只有明顯比回音大聲才算自己在說話（可以插話）。戴耳機沒有回音，照一般標準
+    const refDb = settings.headphones ? undefined : this.engine.recentOutputDb;
+    const speaking = this.vad.update(rms, prob, refDb);
     if (speaking && !this.voxActive) {
       this.voxActive = true;
       if (this.talk === 'idle') this.byVox = true;
@@ -370,9 +372,6 @@ export class Room implements PttHandlers {
     return (
       !this.online ||
       this.muted ||
-      // 別人在說話、或喇叭還在出聲時，麥克風收到的多半是喇叭的回音，自動偵測不觸發（按住發話不受影響）
-      this.othersTalking.length > 0 ||
-      this.engine.outputBusy ||
       Date.now() < this.voxCooldownUntil
     );
   }
@@ -736,6 +735,8 @@ export class Room implements PttHandlers {
     const modeInputs = document.querySelectorAll<HTMLInputElement>('input[name="mode"]');
     modeInputs.forEach((r) => (r.checked = r.value === settings.mode));
     const headset = $<HTMLInputElement>('headset');
+    const headphones = $<HTMLInputElement>('headphones');
+    headphones.checked = settings.headphones;
     const beeps = $<HTMLInputElement>('beeps');
     const denoise = $<HTMLInputElement>('denoise');
     const voiceGate = $<HTMLInputElement>('voice-gate');
@@ -768,6 +769,10 @@ export class Room implements PttHandlers {
           this.render();
         }),
       ),
+      listen(headphones, 'change', () => {
+        settings.headphones = headphones.checked;
+        saveSettings();
+      }),
       listen(headset, 'change', () => {
         settings.headset = headset.checked;
         saveSettings();
