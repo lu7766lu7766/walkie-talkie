@@ -44,6 +44,10 @@
           <span>暱稱</span>
           <input id="lobby-name" name="nickname" required maxlength="24" placeholder="大家會看到的名字" autocomplete="nickname" />
         </label>
+        <label class="field">
+          <span>房間名稱（主題，選填）</span>
+          <input id="lobby-topic" name="topic" maxlength="30" placeholder="例如：週末登山、倉庫盤點" autocomplete="off" />
+        </label>
         <button id="create-btn" class="btn primary block">建立新房間</button>
       </section>
 
@@ -72,7 +76,8 @@
       <header class="brand">
         <img class="logo" src="/icons/icon.svg" alt="" width="72" height="72" />
         <p class="tagline">邀請你加入</p>
-        <h1 class="invite-code">房間 <span id="invite-code"></span></h1>
+        <h1 id="invite-topic-title" class="invite-code">房間</h1>
+        <p class="hint center">房間代號 <span id="invite-code"></span></p>
         <p id="invite-info" class="hint center"></p>
       </header>
 
@@ -96,8 +101,8 @@
       <header class="topbar">
         <button id="leave-btn" class="icon-btn" title="退出房間" aria-label="退出房間"><svg class="icon"><use href="#i-back" /></svg></button>
         <button id="room-code-btn" class="room-title" title="成員" aria-haspopup="dialog">
-          <strong>房間 <span id="room-code"></span></strong>
-          <small><span id="status-dot" class="dot"></span><span id="member-count">0</span> 人在線<span id="room-role" hidden> · 你是房主</span></small>
+          <strong id="room-topic">房間</strong>
+          <small><span id="status-dot" class="dot"></span><span id="room-code-wrap" hidden><span id="room-code"></span> · </span><span id="member-count">0</span> 人在線<span id="room-role" hidden> · 你是房主</span></small>
         </button>
         <button id="share-btn" class="icon-btn" title="邀請" aria-label="邀請" aria-haspopup="dialog"><svg class="icon"><use href="#i-invite" /></svg></button>
         <button id="settings-btn" class="icon-btn" title="設定" aria-label="設定" aria-haspopup="dialog"><svg class="icon"><use href="#i-settings" /></svg></button>
@@ -105,7 +110,7 @@
 
       <section class="stage">
         <p id="speaker-banner" class="status" data-state="offline" aria-live="polite">連線中…</p>
-        <button id="quick-mute" class="btn small danger" hidden></button>
+        <div id="quick-mute" class="quick-mute" hidden></div>
 
         <div id="mic-tip" class="tip" hidden>
           <p><strong>每次都要按「允許」麥克風？</strong></p>
@@ -150,6 +155,7 @@
         <button class="icon-btn sheet-close" aria-label="關閉"><svg class="icon"><use href="#i-close" /></svg></button>
       </header>
       <div class="sheet-body">
+        <p id="invite-topic" class="invite-topic"></p>
         <div class="invite-qr-wrap">
           <button id="invite-qr" class="invite-qr" type="button" aria-label="放大 QR code"></button>
           <p class="hint center">用相機掃描即可加入，點一下放大</p>
@@ -181,7 +187,14 @@
       </header>
       <div class="sheet-body">
         <div id="host-actions" class="host-actions" hidden>
-          <p class="hint">你是房主：可以關閉別人的自動偵測，或禁言一直佔線的人（被禁言的人只能收聽）。</p>
+          <form id="topic-form" class="topic-form">
+            <label class="field">
+              <span>房間名稱</span>
+              <input id="topic-input" maxlength="30" placeholder="例如：週末登山" autocomplete="off" />
+            </label>
+            <button type="submit" class="btn ghost small">儲存</button>
+          </form>
+          <p class="hint">你是房主：可以修改房間名稱、關閉別人的自動偵測，或禁言一直佔線的人（被禁言的人只能收聽）。</p>
           <div class="host-buttons">
             <button id="all-vox-off" class="btn ghost small">全部關閉自動偵測</button>
             <button id="all-mute" class="btn ghost small">全部禁言</button>

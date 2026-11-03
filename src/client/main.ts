@@ -46,8 +46,12 @@ const lobbyName = $<HTMLInputElement>('lobby-name');
 const joinInput = $<HTMLInputElement>('join-input');
 const lobbyError = $('lobby-error');
 
+const lobbyTopic = $<HTMLInputElement>('lobby-topic');
+
 function showLobby(message?: string) {
+  document.title = '對講機';
   lobbyName.value = settings.name;
+  lobbyTopic.value = '';
   joinInput.value = '';
   setError(lobbyError, message);
   renderMicStatus();
@@ -101,13 +105,14 @@ function joinFromInput() {
 
 /** 必須在點擊事件中同步呼叫（enterRoom 的同步階段會解鎖音訊） */
 function enterFromLobby(token: string, created = false) {
+  const topic = created ? lobbyTopic.value.trim() : '';
   const name = lobbyName.value.trim();
   if (!name) {
     setError(lobbyError, '請先輸入暱稱。');
     lobbyName.focus();
     return;
   }
-  void enterRoom(token, name, lobbyError, created);
+  void enterRoom(token, name, lobbyError, created, topic);
 }
 
 // ---------------------------------------------------------------- 邀請頁（點分享連結進來）
@@ -119,12 +124,20 @@ let inviteCode = '';
 function showInvite(code: string) {
   inviteCode = code;
   $('invite-code').textContent = roomLabel(code);
+  // 直接打開邀請連結時，Worker 已經把網頁標題換成「房間名稱｜對講機」，先拿來顯示
+  const title = $('invite-topic-title');
+  const fromWorker = document.title.match(/^(.+)｜對講機$/)?.[1];
+  title.textContent = fromWorker ?? `房間 ${roomLabel(code)}`;
   inviteName.value = settings.name;
   setError(inviteError);
   const info = $('invite-info');
   info.textContent = '查詢房間狀態中…';
   void fetchRoomInfo(code).then((r) => {
     if (inviteCode !== code) return;
+    if (r?.topic) {
+      title.textContent = r.topic;
+      document.title = `${r.topic}｜對講機`;
+    }
     info.textContent = !r
       ? ''
       : r.members === 0
@@ -154,7 +167,7 @@ listen($('invite-lobby-btn'), 'click', () => {
 // ---------------------------------------------------------------- 進入／離開房間
 
 /** 必須在點擊事件中同步呼叫（Room.start 的同步階段會解鎖音訊） */
-async function enterRoom(code: string, name: string, errorEl: HTMLElement, created = false) {
+async function enterRoom(code: string, name: string, errorEl: HTMLElement, created = false, topic = '') {
   saveName(name);
   setError(errorEl);
   const buttons = document.querySelectorAll<HTMLButtonElement>('#lobby-view button, #invite-view button');
@@ -163,7 +176,7 @@ async function enterRoom(code: string, name: string, errorEl: HTMLElement, creat
   engine ??= new AudioEngine();
   const next = new Room(engine, onLeave);
   try {
-    await next.start(code, created);
+    await next.start(code, created, topic);
   } catch (err) {
     // 啟動失敗（例如拒絕麥克風權限）：整個丟掉，下次重新建立
     engine?.stop();

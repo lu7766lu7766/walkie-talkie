@@ -9,8 +9,10 @@
   "assets": {
     // /r/123456 這類前端路由都回傳 index.html
     "not_found_handling": "single-page-application",
-    // WebSocket 與 API 一律先交給 Worker 處理，其餘走靜態資源
-    "run_worker_first": ["/api/*"]
+    "binding": "ASSETS",
+    // WebSocket 與 API 一律先交給 Worker 處理，其餘走靜態資源；
+    // 邀請連結 /r/* 也交給 Worker，把網頁標題換成房間名稱（聊天 App 的連結預覽會顯示）
+    "run_worker_first": ["/api/*", "/r/*"]
   },
 
   // 一個房間 = 一個 Durable Object

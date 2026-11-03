@@ -5,7 +5,10 @@ import {
   CODEC_MULAW_16K,
   MAX_FRAME_BYTES,
   MAX_MEMBERS,
+  MAX_SPEAKERS,
   MAX_TALK_MS,
+  MAX_TOPIC_LENGTH,
+  RELAY_HEADER_BYTES,
   type ClientMessage,
   type Member,
   type ModAction,
@@ -17,6 +20,7 @@ import { audioStats, createTranscriber, mulawToWav, toBase64, worthTranscribing,
 
 interface Env {
   CHANNEL: DurableObjectNamespace<Channel>;
+  ASSETS: Fetcher;
   AI?: Ai;
   TRANSCRIBE_FAKE?: string;
 }
@@ -40,7 +44,11 @@ const TRANSCRIPT_KEEP_MS = 70_000;
 interface Attachment {
   id: string;
   name: string;
+  /** 連線編號：轉發語音框時標示是誰的聲音 */
+  slot: number;
   talking: boolean;
+  /** 這次發話的 id（對應通話文字與重播） */
+  talkId?: string;
   since: number;
   host: boolean;
   vox: boolean;
@@ -52,6 +60,8 @@ const HOST_KEY_HASH = 'hostKeyHash';
 /** 被禁言的 client id；重新整理、重連後仍然禁言 */
 const MUTED_IDS = 'muted';
 const MAX_MUTED_IDS = 200;
+/** 房間名稱（主題），建立房間的人設定 */
+const TOPIC = 'topic';
 const HOST_KEY_RE = /^[A-Za-z0-9_-]{20,100}$/;
 
 /**
@@ -59,6 +69,7 @@ const HOST_KEY_RE = /^[A-Za-z0-9_-]{20,100}$/;
  * 伺服器不提供任何列出房間的 API，只有拿到分享網址的人算得出房間 id。
  */
 const ROOM_RE = /^[a-f0-9]{40}$/;
+const INVITE_PATH_RE = /^\/r\/([A-Za-z0-9_-]{22})\/?$/;
 const CLIENT_ID_RE = /^[A-Za-z0-9-]{8,64}$/;
 const OPEN = 1;
 
@@ -77,22 +88,70 @@ export default {
       return env.CHANNEL.get(env.CHANNEL.idFromName(room)).fetch(request);
     }
 
+    const invite = url.pathname.match(INVITE_PATH_RE);
+    if (invite) return invitePage(request, env, invite[1]);
+
     if (url.pathname === '/api/health') return Response.json({ ok: true });
     return new Response('Not found', { status: 404 });
   },
 } satisfies ExportedHandler<Env>;
 
 /**
+ * 邀請連結 /r/<代碼>：回傳一般的網頁，但把標題換成房間名稱。
+ * 在 LINE、Messenger、Slack 等貼上連結時，預覽卡片就會顯示「週末登山｜對講機」。
+ */
+async function invitePage(request: Request, env: Env, token: string): Promise<Response> {
+  const page = await env.ASSETS.fetch(new URL('/', request.url));
+  let topic = '';
+  try {
+    const room = await roomIdFor(token);
+    const res = await env.CHANNEL.get(env.CHANNEL.idFromName(room)).fetch(new URL(`/api/channel/${room}/info`, request.url));
+    topic = ((await res.json()) as RoomInfo).topic ?? '';
+  } catch {
+    // 查不到就用一般標題
+  }
+  const title = topic ? `${topic}｜對講機` : '對講機房間邀請';
+  const description = topic
+    ? `邀請你加入「${topic}」對講機房間，點開就能一起通話。`
+    : '邀請你加入對講機房間，點開就能一起通話。';
+  const meta = [
+    ['og:title', title],
+    ['og:description', description],
+    ['og:type', 'website'],
+    ['og:image', new URL('/icons/icon-512.png', request.url).href],
+  ]
+    .map(([property, content]) => `<meta property="${property}" content="${escapeHtml(content)}" />`)
+    .join('');
+  const headers = new Headers(page.headers);
+  headers.set('Cache-Control', 'no-store');
+  return new HTMLRewriter()
+    .on('title', { element: (el) => void el.setInnerContent(title) })
+    .on('meta[name="description"]', { element: (el) => void el.setAttribute('content', description) })
+    .on('head', { element: (el) => void el.append(meta, { html: true }) })
+    .transform(new Response(page.body, { status: page.status, headers }));
+}
+
+/** 和前端 room-id.ts 相同的算法：房間代碼 → 房間 id */
+async function roomIdFor(token: string): Promise<string> {
+  return (await sha256(`walkie-talkie\nroom\n${token}`)).slice(0, 40);
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+/**
  * 一個頻道 = 一個 Durable Object。
  *
- * 負責：成員名單、發話權（同一時間只有一人能講）、把語音框轉發給其他人，
+ * 負責：成員名單、發話（多人可以同時說話）、把語音框標上發話者後轉發給其他人，
  * 以及發話結束後把那段語音交給 Workers AI 轉成文字、廣播給大家。
  * 使用 WebSocket Hibernation API：頻道沒人講話時 DO 會休眠，不計執行時間；
  * 心跳 ping/pong 由 runtime 自動回覆，不會喚醒 DO。
  */
 export class Channel extends DurableObject<Env> {
   private readonly transcriber: Transcriber | null;
-  private recording: Recording | null = null;
+  /** 每個正在發話的人各自一段錄音（client id → 錄音） */
+  private readonly recordings = new Map<string, Recording>();
   private transcripts: TranscriptEntry[] = [];
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -106,7 +165,7 @@ export class Channel extends DurableObject<Env> {
     // 房間資訊：建立房間時確認號碼沒人在用、邀請頁顯示目前人數
     if (url.pathname.endsWith('/info')) {
       return Response.json(
-        { members: this.sockets().length, speaking: !!this.speakerSocket() } satisfies RoomInfo,
+        { members: this.sockets().length, speaking: this.speaking().length > 0, topic: await this.topic() } satisfies RoomInfo,
         { headers: { 'Cache-Control': 'no-store' } },
       );
     }
@@ -122,15 +181,26 @@ export class Channel extends DurableObject<Env> {
     if (this.sockets().length >= MAX_MEMBERS) return new Response('Channel full', { status: 403 });
 
     const muted = (await this.mutedIds()).includes(id);
+    // 要在 acceptWebSocket 之前算：新連線被接受後還沒有 attachment
+    const slot = this.freeSlot();
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ id, name, talking: false, since: 0, host: false, vox: false, muted } satisfies Attachment);
+    server.serializeAttachment({
+      id,
+      name,
+      slot,
+      talking: false,
+      since: 0,
+      host: false,
+      vox: false,
+      muted,
+    } satisfies Attachment);
 
     send(server, {
       t: 'welcome',
       you: id,
       members: this.members(),
-      speaker: this.speaker(),
+      topic: await this.topic(),
       transcripts: this.recentTranscripts(),
       serverNow: Date.now(),
     });
@@ -140,13 +210,25 @@ export class Channel extends DurableObject<Env> {
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
     if (typeof message !== 'string') {
-      // 語音框：只有持有發話權的人送來的才轉發
+      // 語音框：只轉發正在發話的人送來的，並在前面加上他的 slot，讓聽眾知道是誰的聲音
       const me = attachment(ws);
-      if (message.byteLength > MAX_FRAME_BYTES || !me.talking) return;
-      for (const peer of this.sockets()) {
-        if (peer !== ws) trySend(peer, message);
+      if (message.byteLength < 2 || message.byteLength > MAX_FRAME_BYTES || !me.talking) return;
+      if (Date.now() - me.since > MAX_TALK_MS + 5_000) {
+        // 超過發話上限仍沒放開（用戶端異常）：伺服器強制結束
+        send(ws, { t: 'revoked' });
+        this.releaseFloor(ws);
+        return;
       }
-      this.record(me.id, message);
+      const bytes = new Uint8Array(message);
+      const out = new Uint8Array(bytes.length + RELAY_HEADER_BYTES - 1);
+      out[0] = bytes[0];
+      out[1] = me.slot >> 8;
+      out[2] = me.slot & 0xff;
+      out.set(bytes.subarray(1), RELAY_HEADER_BYTES);
+      for (const peer of this.sockets()) {
+        if (peer !== ws) trySend(peer, out.buffer);
+      }
+      this.record(me.id, bytes);
       return;
     }
 
@@ -161,6 +243,21 @@ export class Channel extends DurableObject<Env> {
     else if (msg.t === 'hello') await this.hello(ws, msg);
     else if (msg.t === 'vox') this.update(ws, { vox: !!msg.on });
     else if (msg.t === 'mod') await this.moderate(ws, msg.action, msg.target);
+    else if (msg.t === 'topic') await this.setTopic(ws, msg.topic);
+  }
+
+  // ---- 房間名稱
+
+  private async topic(): Promise<string> {
+    return (await this.ctx.storage.get<string>(TOPIC)) ?? '';
+  }
+
+  /** 房主修改房間名稱 */
+  private async setTopic(ws: WebSocket, raw: unknown) {
+    if (!attachment(ws).host) return;
+    const topic = cleanTopic(raw);
+    await this.ctx.storage.put(TOPIC, topic);
+    this.broadcast({ t: 'topic', topic });
   }
 
   // ---- 房主與管理
@@ -173,9 +270,14 @@ export class Channel extends DurableObject<Env> {
       const stored = await this.ctx.storage.get<string>(HOST_KEY_HASH);
       if (stored) host = stored === hash;
       else if (msg.claim && this.sockets().every((s) => s === ws || attachment(s).id === attachment(ws).id)) {
-        // 剛建立的房間：房間裡只有自己、也還沒有房主，才能成為房主
+        // 剛建立的房間：房間裡只有自己、也還沒有房主，才能成為房主，同時設定房間名稱
         await this.ctx.storage.put(HOST_KEY_HASH, hash);
         host = true;
+        const topic = cleanTopic(msg.topic);
+        if (topic) {
+          await this.ctx.storage.put(TOPIC, topic);
+          this.broadcast({ t: 'topic', topic });
+        }
       }
     }
     // 房主不會被禁言
@@ -212,9 +314,8 @@ export class Channel extends DurableObject<Env> {
       if (a.muted === mute) continue;
       s.serializeAttachment({ ...a, muted: mute, talking: mute ? false : a.talking });
       if (mute && a.talking) {
-        // 正在說話就立刻收回發話權
+        // 正在說話就立刻停止
         send(s, { t: 'revoked' });
-        this.broadcast({ t: 'speaker', speaker: null }, s);
         this.finishRecording(a.id);
       }
       send(s, { t: 'moderated', action, by: me.name });
@@ -235,43 +336,36 @@ export class Channel extends DurableObject<Env> {
     this.disconnect(ws, 1011, 'error');
   }
 
+  /** 開始發話：多人可以同時說，只有被禁言或同時說話的人數已滿才會被拒絕 */
   private requestFloor(ws: WebSocket) {
     const me = attachment(ws);
-    const now = Date.now();
-    const current = this.speakerSocket();
-
     if (me.muted) {
-      send(ws, { t: 'denied', speaker: this.speaker(), muted: true });
+      send(ws, { t: 'denied', reason: 'muted' });
       return;
     }
-
-    if (current && current !== ws) {
-      const holder = attachment(current);
-      // 對方超過發話上限仍未釋放（例如網路卡死），視為失效，強制收回
-      if (now - holder.since < MAX_TALK_MS + 5_000) {
-        send(ws, { t: 'denied', speaker: toMember(holder) });
-        return;
-      }
-      current.serializeAttachment({ ...holder, talking: false });
-      send(current, { t: 'revoked' });
-      this.finishRecording(holder.id);
+    if (me.talking && me.talkId) {
+      // 重複要求（例如網路重送）：沿用同一段發話
+      send(ws, { t: 'granted', talkId: me.talkId });
+      return;
     }
-
-    if (!me.talking) {
-      ws.serializeAttachment({ ...me, talking: true, since: now });
-      this.startRecording(me, now);
+    if (this.speaking().length >= MAX_SPEAKERS) {
+      send(ws, { t: 'denied', reason: 'full' });
+      return;
     }
-    const talkId = this.recording?.speakerId === me.id ? this.recording.id : crypto.randomUUID();
+    const now = Date.now();
+    const talkId = crypto.randomUUID();
+    ws.serializeAttachment({ ...me, talking: true, talkId, since: now });
+    this.startRecording(me, talkId, now);
     send(ws, { t: 'granted', talkId });
-    this.broadcast({ t: 'speaker', speaker: toMember(me), talkId }, ws);
+    this.broadcast({ t: 'members', members: this.members() });
   }
 
   private releaseFloor(ws: WebSocket) {
     const me = attachment(ws);
     if (!me.talking) return;
-    ws.serializeAttachment({ ...me, talking: false });
-    this.broadcast({ t: 'speaker', speaker: null }, ws);
+    ws.serializeAttachment({ ...me, talking: false, talkId: undefined });
     this.finishRecording(me.id);
+    this.broadcast({ t: 'members', members: this.members() });
   }
 
   /** 關閉連線並通知其他人；可能被重複呼叫（主動踢除後又收到 close 事件），所以要冪等。 */
@@ -289,19 +383,25 @@ export class Channel extends DurableObject<Env> {
     }
     // close() 之後 readyState 不再是 OPEN，sockets() 會自動排除它
     this.broadcast({ t: 'members', members: this.members() });
-    this.broadcast({ t: 'speaker', speaker: this.speaker() });
+  }
+
+  /** 找一個沒人用的連線編號（1 開始） */
+  private freeSlot(): number {
+    const used = new Set(this.sockets().map((ws) => attachment(ws).slot));
+    let slot = 1;
+    while (used.has(slot)) slot++;
+    return slot;
   }
 
   // ---- 語音轉文字
 
-  private startRecording(speaker: Attachment, at: number) {
-    this.recording = { id: crypto.randomUUID(), speakerId: speaker.id, name: speaker.name, at, chunks: [], bytes: 0 };
+  private startRecording(speaker: Attachment, id: string, at: number) {
+    this.recordings.set(speaker.id, { id, speakerId: speaker.id, name: speaker.name, at, chunks: [], bytes: 0 });
   }
 
-  private record(speakerId: string, frame: ArrayBuffer) {
-    const rec = this.recording;
-    if (!this.transcriber || !rec || rec.speakerId !== speakerId || rec.bytes >= MAX_RECORDING_BYTES) return;
-    const bytes = new Uint8Array(frame);
+  private record(speakerId: string, bytes: Uint8Array) {
+    const rec = this.recordings.get(speakerId);
+    if (!this.transcriber || !rec || rec.bytes >= MAX_RECORDING_BYTES) return;
     if (bytes[0] !== CODEC_MULAW_16K) return;
     rec.chunks.push(bytes.slice(1));
     rec.bytes += bytes.length - 1;
@@ -309,9 +409,9 @@ export class Channel extends DurableObject<Env> {
 
   /** 發話結束：值得辨識就先廣播「辨識中」，在背景辨識與校正 */
   private finishRecording(speakerId: string) {
-    const rec = this.recording;
-    if (!rec || rec.speakerId !== speakerId) return;
-    this.recording = null;
+    const rec = this.recordings.get(speakerId);
+    if (!rec) return;
+    this.recordings.delete(speakerId);
     if (!this.transcriber || !worthTranscribing(rec.chunks)) return;
     const entry: TranscriptEntry = { id: rec.id, speakerId: rec.speakerId, name: rec.name, at: rec.at, text: '', status: 'pending' };
     this.putTranscript(entry);
@@ -360,13 +460,8 @@ export class Channel extends DurableObject<Env> {
     return this.sockets().map((ws) => toMember(attachment(ws)));
   }
 
-  private speakerSocket(): WebSocket | undefined {
-    return this.sockets().find((ws) => attachment(ws).talking);
-  }
-
-  private speaker(): Member | null {
-    const ws = this.speakerSocket();
-    return ws ? toMember(attachment(ws)) : null;
+  private speaking(): WebSocket[] {
+    return this.sockets().filter((ws) => attachment(ws).talking);
   }
 
   private broadcast(msg: ServerMessage, except?: WebSocket) {
@@ -382,7 +477,16 @@ function attachment(ws: WebSocket): Attachment {
 }
 
 function toMember(a: Attachment): Member {
-  return { id: a.id, name: a.name, host: !!a.host, vox: !!a.vox, muted: !!a.muted };
+  return {
+    id: a.id,
+    name: a.name,
+    host: !!a.host,
+    vox: !!a.vox,
+    muted: !!a.muted,
+    slot: a.slot ?? 0,
+    talking: !!a.talking,
+    ...(a.talking && a.talkId ? { talkId: a.talkId } : {}),
+  };
 }
 
 async function sha256(text: string): Promise<string> {
@@ -400,6 +504,11 @@ function trySend(ws: WebSocket, data: string | ArrayBuffer) {
   } catch {
     // 對方剛好斷線，交給 close 事件處理
   }
+}
+
+function cleanTopic(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, MAX_TOPIC_LENGTH);
 }
 
 function cleanName(raw: string | null): string {

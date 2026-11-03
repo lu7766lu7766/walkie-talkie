@@ -1130,8 +1130,38 @@ kbd {
   color: var(--danger);
 }
 
-#quick-mute {
+.quick-mute {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
   margin-top: -8px;
+}
+
+.invite-topic {
+  font-size: 18px;
+  font-weight: 700;
+  text-align: center;
+  word-break: break-word;
+}
+
+.topic-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.topic-form .field {
+  flex: 1;
+  min-width: 0;
+}
+
+.topic-form .btn {
+  height: 46px;
+}
+
+.room-title strong {
+  font-size: 17px;
 }
 
 .tip {

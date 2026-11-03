@@ -1,4 +1,4 @@
-import { AUDIO_SAMPLE_RATE, CODEC_MULAW_16K } from '../shared/protocol';
+import { AUDIO_SAMPLE_RATE, CODEC_MULAW_16K, RELAY_HEADER_BYTES } from '../shared/protocol';
 import { MULAW_TO_FLOAT } from '../shared/mulaw';
 import workletUrl from './capture.worklet.ts?worker&url';
 import rnnoiseUrl from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url';
@@ -38,7 +38,8 @@ export class AudioEngine {
   private capture?: AudioWorkletNode;
   private source?: MediaStreamAudioSourceNode;
   private mic?: MediaStream;
-  private playHead = 0;
+  /** 每個發話者（slot）各自的播放排程：多人同時說話時分開緩衝，再由 Web Audio 混音 */
+  private readonly playHeads = new Map<number, number>();
   private toneEnd = 0;
   private clipEnd = 0;
   private stopClip?: () => void;
@@ -129,7 +130,7 @@ export class AudioEngine {
     this.onFrame = () => {};
     this.onRxLevel = () => {};
     this.onMicChange = () => {};
-    this.playHead = 0;
+    this.playHeads.clear();
   }
 
   /** 麥克風是否正在運作 */
@@ -220,7 +221,7 @@ export class AudioEngine {
    * 即時監聽用它避免麥克風收到別人的聲音或提示音，誤以為是自己在說話。
    */
   get outputBusy(): boolean {
-    return this.ctx.currentTime < Math.max(this.playHead, this.toneEnd, this.clipEnd) + 0.3;
+    return this.ctx.currentTime < Math.max(0, ...this.playHeads.values(), this.toneEnd, this.clipEnd) + 0.3;
   }
 
   setNoise(noise: NoiseOptions) {
@@ -231,27 +232,29 @@ export class AudioEngine {
     this.rx.gain.value = v;
   }
 
-  playFrame(data: ArrayBuffer) {
+  /** 播放伺服器轉發的語音框（[codec][slot 2 bytes][payload]），依 slot 分開排程 */
+  playFrame(slot: number, data: ArrayBuffer) {
     const bytes = new Uint8Array(data);
-    if (bytes.length < 2 || bytes[0] !== CODEC_MULAW_16K) return;
+    if (bytes.length <= RELAY_HEADER_BYTES || bytes[0] !== CODEC_MULAW_16K) return;
 
     const now = this.ctx.currentTime;
-    if (this.playHead < now + 0.01) this.playHead = now + JITTER_BUFFER_S;
-    else if (this.playHead > now + MAX_LAG_S) return;
+    let head = this.playHeads.get(slot) ?? 0;
+    if (head < now + 0.01) head = now + JITTER_BUFFER_S;
+    else if (head > now + MAX_LAG_S) return;
 
-    const buffer = this.ctx.createBuffer(1, bytes.length - 1, AUDIO_SAMPLE_RATE);
+    const buffer = this.ctx.createBuffer(1, bytes.length - RELAY_HEADER_BYTES, AUDIO_SAMPLE_RATE);
     const samples = buffer.getChannelData(0);
     let peak = 0;
     for (let i = 0; i < samples.length; i++) {
-      const s = MULAW_TO_FLOAT[bytes[i + 1]];
+      const s = MULAW_TO_FLOAT[bytes[i + RELAY_HEADER_BYTES]];
       samples[i] = s;
       if (s > peak) peak = s;
     }
     const src = this.ctx.createBufferSource();
     src.buffer = buffer;
     src.connect(this.rx);
-    src.start(this.playHead);
-    this.playHead += buffer.duration;
+    src.start(head);
+    this.playHeads.set(slot, head + buffer.duration);
     this.onRxLevel(peak);
   }
 
