@@ -488,6 +488,7 @@ export class Room implements PttHandlers {
     for (const m of talking) if (m.talkId) this.clips.start(m.talkId);
     if (!before && talking.length) this.engine.incoming();
     else if (before && !talking.length) {
+      this.engine.flushBackground();
       this.engine.roger();
       setLevel(0);
     }
@@ -761,8 +762,11 @@ export class Room implements PttHandlers {
         this.stopTalkNow();
         this.engine.suspendMic();
       }
+      // 先切好音訊模式再開始背景播放
+      this.engine.setHidden(true);
       return;
     }
+    this.engine.setHidden(false);
     // 回到前景：喚醒被系統暫停的音訊、重新開啟麥克風、耳機按鍵與螢幕常亮
     this.engine.resumeIfNeeded();
     void this.engine.resumeMic();
