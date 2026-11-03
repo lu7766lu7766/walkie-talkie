@@ -19,8 +19,6 @@ export interface Settings {
   headset: boolean;
   volume: number;
   beeps: boolean;
-  /** 指定的麥克風 deviceId（空字串：系統預設） */
-  micId: string;
   /** 經由媒體元素播放，讓切到背景、鎖屏後仍能收聽 */
   background: boolean;
   /** 保持螢幕常亮（iPhone 背景執行受限，預設開啟） */
@@ -47,7 +45,6 @@ export const settings: Settings & { version: number } = {
   mode: 'hold',
   key: 'Space',
   headset: true,
-  micId: '',
   volume: 1,
   beeps: true,
   background: true,

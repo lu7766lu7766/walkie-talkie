@@ -21,17 +21,6 @@ const MAX_LAG_S = 0.6;
 
 type Tone = [freq: number, ms: number];
 
-/** 看門狗檢查間隔：音訊卡住時自動恢復 */
-const WATCHDOG_MS = 400;
-/** 重播結束後還要多久沒收到 ended 事件，就當作卡住強制停止 */
-const CLIP_END_GRACE_S = 0.5;
-/** 重播的淡入淡出，避免開頭結尾「啵」一聲 */
-const CLIP_FADE_S = 0.015;
-/** 連續幾次檢查都沒有前進才算卡住（避免誤判） */
-const STALL_TICKS = 2;
-/** 兩次自動恢復至少間隔多久 */
-const RECOVERY_COOLDOWN_MS = 3000;
-
 export class AudioEngine {
   readonly ctx = new AudioContext({ latencyHint: 'interactive' });
   private readonly master = this.ctx.createGain();
@@ -44,8 +33,6 @@ export class AudioEngine {
   private readonly sink = this.ctx.createMediaStreamDestination();
   private readonly output = new Audio();
   private background = false;
-  /** 背景播放因為沒有使用者操作而暫時關閉，下次點擊時恢復 */
-  private backgroundWanted = false;
   private started = false;
   private reopening?: Promise<void>;
   private capture?: AudioWorkletNode;
@@ -55,13 +42,6 @@ export class AudioEngine {
   private toneEnd = 0;
   private clipEnd = 0;
   private stopClip?: () => void;
-  private watchdogTimer?: ReturnType<typeof setInterval>;
-  private lastCtxTime = -1;
-  private lastOutputTime = -1;
-  private ctxStalls = 0;
-  private outputStalls = 0;
-  private outputMoving = false;
-  private lastRecovery = 0;
 
   /**
    * 每 40 ms 產生一個語音框就呼叫（已含 codec 標頭，可直接送出）。
@@ -77,8 +57,6 @@ export class AudioEngine {
   /** 播放端音量（0~1），給 UI 做音量動畫 */
   onRxLevel: (level: number) => void = () => {};
   beeps = true;
-  /** 指定的麥克風 deviceId（空字串：系統預設） */
-  micId = '';
 
   constructor() {
     this.rx.connect(this.master);
@@ -144,70 +122,6 @@ export class AudioEngine {
     // iOS 取得麥克風時會切換 audio session，AudioContext 可能被中斷，再喚醒一次
     if (this.ctx.state !== 'running') await this.ctx.resume().catch(() => {});
     this.started = true;
-    this.watchdogTimer = setInterval(() => this.watchdog(), WATCHDOG_MS);
-  }
-
-  /**
-   * 音訊卡住時自動恢復。卡住的症狀是喇叭不斷重複最後一小段聲音（尾音反覆），
-   * 原因是瀏覽器的音訊輸出停止更新：AudioContext 被系統暫停或中斷，或背景播放用的 <audio> 元素停住。
-   * 以前要使用者再點一下（點擊會喚醒音訊）才恢復，這裡定期檢查並自動處理。
-   */
-  private watchdog() {
-    if (this.ctx.state === 'closed') return;
-    const now = performance.now();
-    const canRecover = document.visibilityState === 'visible' && now - this.lastRecovery > RECOVERY_COOLDOWN_MS;
-
-    // 重播已經該結束了卻沒收到 ended：強制停止
-    if (this.clipEnd && this.ctx.currentTime > this.clipEnd + CLIP_END_GRACE_S) this.stopClip?.();
-
-    // AudioContext 被暫停／中斷，或時間不再前進（音訊執行緒卡住）
-    const ctx = this.ctx.currentTime;
-    if (this.ctx.state !== 'running') {
-      void this.ctx.resume().catch(() => {});
-      this.ctxStalls = 0;
-    } else {
-      this.ctxStalls = ctx === this.lastCtxTime ? this.ctxStalls + 1 : 0;
-      if (this.ctxStalls >= STALL_TICKS && canRecover) {
-        console.warn('[audio] AudioContext 時間停止前進，重新啟動');
-        this.lastRecovery = now;
-        this.ctxStalls = 0;
-        void this.ctx
-          .suspend()
-          .then(() => this.ctx.resume())
-          .catch(() => {});
-      }
-    }
-    this.lastCtxTime = ctx;
-
-    // 背景播放的 <audio> 元素：被暫停就繼續播；時間不再前進代表卡住，重新接上串流（清掉舊緩衝）
-    if (!this.background) return;
-    const out = this.output.currentTime;
-    if (this.output.paused) {
-      void this.output.play().catch(() => {});
-      this.outputStalls = 0;
-    } else if (out > this.lastOutputTime) {
-      this.outputMoving = true;
-      this.outputStalls = 0;
-    } else if (this.outputMoving) {
-      // 只有看過它正常前進的瀏覽器才判斷（有些瀏覽器的串流播放時間不會更新）
-      this.outputStalls++;
-      if (this.outputStalls >= STALL_TICKS && canRecover) {
-        console.warn('[audio] 背景播放元素停住，重新接上');
-        this.lastRecovery = now;
-        this.outputStalls = 0;
-        this.outputMoving = false;
-        this.output.srcObject = null;
-        this.output.srcObject = this.sink.stream;
-        void this.output.play().catch(() => {
-          // 沒有使用者操作不能重新播放：先改成直接輸出到喇叭，下次點擊時再切回背景播放
-          this.master.disconnect();
-          this.master.connect(this.ctx.destination);
-          this.background = false;
-          this.backgroundWanted = true;
-        });
-      }
-    }
-    this.lastOutputTime = out;
   }
 
   /** 離開房間：解除與房間的連結，但麥克風與音訊保持開啟，下一個房間直接沿用 */
@@ -218,28 +132,6 @@ export class AudioEngine {
     this.playHead = 0;
   }
 
-  /**
-   * 換麥克風：先開新的再關舊的（openMic 的順序），失敗時保留原本的。
-   * 需在使用者操作中呼叫，部分瀏覽器才會允許。
-   */
-  async setMicDevice(id: string) {
-    this.micId = id;
-    if (!this.started && !this.mic) return;
-    await this.reopening?.catch(() => {});
-    try {
-      await this.openMic();
-      this.micError = null;
-    } catch (err) {
-      if (!this.micLive) this.micError = err;
-    }
-    this.onMicChange();
-  }
-
-  /** 目前使用中的麥克風 deviceId */
-  get currentMicId(): string {
-    return this.mic?.getAudioTracks()[0]?.getSettings().deviceId ?? '';
-  }
-
   /** 麥克風是否正在運作 */
   get micLive(): boolean {
     return !!this.mic?.getAudioTracks().some((t) => t.readyState === 'live');
@@ -247,8 +139,6 @@ export class AudioEngine {
 
   /** 完全釋放麥克風與音訊（使用者在大廳主動關閉，或啟動失敗時） */
   stop() {
-    clearInterval(this.watchdogTimer);
-    this.stopClip?.();
     this.mic?.getTracks().forEach((t) => t.stop());
     this.capture?.disconnect();
     this.output.pause();
@@ -259,7 +149,6 @@ export class AudioEngine {
   /** 切換背景播放。開啟時聲音經由 <audio> 元素輸出，關閉時直接輸出到喇叭。 */
   setBackground(on: boolean) {
     this.background = on;
-    this.backgroundWanted = false;
     this.master.disconnect();
     if (on) {
       this.master.connect(this.sink);
@@ -273,10 +162,6 @@ export class AudioEngine {
   /** 網頁從背景回來、或 iOS 被電話打斷後喚醒音訊 */
   resumeIfNeeded() {
     if (this.ctx.state === 'closed') return;
-    if (this.backgroundWanted) {
-      this.backgroundWanted = false;
-      this.setBackground(true);
-    }
     if (this.ctx.state !== 'running') void this.ctx.resume().catch(() => {});
     if (this.background && this.output.paused) void this.output.play().catch(() => {});
   }
@@ -313,16 +198,9 @@ export class AudioEngine {
     if (!navigator.mediaDevices?.getUserMedia) throw new TypeError('getUserMedia is not supported');
     // 記錄瀏覽器跳出詢問的次數：一直被問的人，畫面上提示怎麼設定成「一律允許」
     if ((await micPermission()) === 'prompt') countMicPrompt();
-    const audio: MediaTrackConstraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 };
-    let mic: MediaStream;
-    try {
-      mic = await navigator.mediaDevices.getUserMedia({ audio: this.micId ? { ...audio, deviceId: { exact: this.micId } } : audio });
-    } catch (err) {
-      // 指定的麥克風不見了（拔掉、換裝置）：改用系統預設
-      const name = (err as { name?: string }).name;
-      if (!this.micId || (name !== 'NotFoundError' && name !== 'OverconstrainedError')) throw err;
-      mic = await navigator.mediaDevices.getUserMedia({ audio });
-    }
+    const mic = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+    });
     this.mic?.getTracks().forEach((t) => t.stop());
     this.source?.disconnect();
     this.mic = mic;
@@ -395,31 +273,20 @@ export class AudioEngine {
     }
     const src = this.ctx.createBufferSource();
     src.buffer = buffer;
-    // 每段重播有自己的音量節點：淡入淡出，停止時整段從音訊圖拔掉，不會殘留聲音
-    const gain = this.ctx.createGain();
-    src.connect(gain).connect(this.rx);
+    src.connect(this.rx);
     const start = this.ctx.currentTime + 0.05;
-    const end = start + buffer.duration;
-    gain.gain.setValueAtTime(0, start);
-    gain.gain.linearRampToValueAtTime(1, start + CLIP_FADE_S);
-    gain.gain.setValueAtTime(1, Math.max(start + CLIP_FADE_S, end - CLIP_FADE_S));
-    gain.gain.linearRampToValueAtTime(0, end);
     src.start(start);
-    src.stop(end + 0.01);
-    this.clipEnd = end;
+    this.clipEnd = start + buffer.duration;
 
     let stopped = false;
     const stop = () => {
       if (stopped) return;
       stopped = true;
-      src.onended = null;
       try {
         src.stop();
       } catch {
         // 已經停了
       }
-      src.disconnect();
-      gain.disconnect();
       this.clipEnd = 0;
       if (this.stopClip === stop) this.stopClip = undefined;
       onEnd();

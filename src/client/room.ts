@@ -3,7 +3,6 @@ import type { AudioEngine, NoiseOptions } from './audio-engine';
 import { Connection } from './connection';
 import { $, listen, setLevel, toast, vibrate } from './dom';
 import {
-  HEADSET_ACTION_LABELS,
   HeadsetButton,
   bindKeyboard,
   bindScreenButton,
@@ -101,12 +100,6 @@ export class Room implements PttHandlers {
     engine.onMicChange = () => this.render();
     engine.onRxLevel = (level) => setLevel(level);
     engine.beeps = settings.beeps;
-    engine.micId = settings.micId;
-    this.headset.onPress = (action, accepted) => {
-      const time = new Date().toLocaleTimeString('zh-TW', { hour12: false });
-      $('headset-last').textContent =
-        `最近收到：${HEADSET_ACTION_LABELS[action] ?? action}（${time}）` + (accepted ? '' : '，與上一次太接近，當成同一次按鍵');
-    };
     engine.setVolume(settings.volume);
   }
 
@@ -181,7 +174,6 @@ export class Room implements PttHandlers {
       }),
       listen($('settings-btn'), 'click', () => {
         openSheet('settings-sheet');
-      void this.renderMicOptions();
         // 設定面板打開時，即使沒開自動偵測也顯示麥克風音量，方便調整噪音門檻
         this.noiseOpen = true;
         this.vad.reset();
@@ -270,9 +262,7 @@ export class Room implements PttHandlers {
     }
     if (!this.engine.micLive) {
       // 沒有麥克風：只能收聽。順便再試一次（使用者可能剛接上麥克風）
-      // 忙線音讓用耳機按鍵、看不到螢幕的人知道沒有開始發話
       this.held.clear();
-      this.engine.busy();
       void this.retryMic();
       return;
     }
@@ -693,7 +683,6 @@ export class Room implements PttHandlers {
     const modeInputs = document.querySelectorAll<HTMLInputElement>('input[name="mode"]');
     modeInputs.forEach((r) => (r.checked = r.value === settings.mode));
     const headset = $<HTMLInputElement>('headset');
-    const micSelect = $<HTMLSelectElement>('mic-select');
     const beeps = $<HTMLInputElement>('beeps');
     const denoise = $<HTMLInputElement>('denoise');
     const voiceGate = $<HTMLInputElement>('voice-gate');
@@ -726,16 +715,6 @@ export class Room implements PttHandlers {
           this.render();
         }),
       ),
-      listen(micSelect, 'change', async () => {
-        settings.micId = micSelect.value;
-        saveSettings();
-        micSelect.disabled = true;
-        await this.engine.setMicDevice(settings.micId);
-        micSelect.disabled = false;
-        toast(this.engine.micLive ? '已切換麥克風' : '無法使用這個麥克風');
-        void this.renderMicOptions();
-        this.render();
-      }),
       listen(headset, 'change', () => {
         settings.headset = headset.checked;
         saveSettings();
@@ -779,24 +758,6 @@ export class Room implements PttHandlers {
         bindKey.disabled = false;
       }),
     ];
-  }
-
-  /** 設定面板的麥克風清單（取得權限後才看得到名稱） */
-  private async renderMicOptions() {
-    const select = $<HTMLSelectElement>('mic-select');
-    let devices: MediaDeviceInfo[] = [];
-    try {
-      devices = (await navigator.mediaDevices.enumerateDevices()).filter(
-        (d) => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications',
-      );
-    } catch {
-      // 不支援列出裝置：只留「自動」
-    }
-    const auto = new Option('自動（系統預設）', '');
-    select.replaceChildren(auto, ...devices.map((d, i) => new Option(d.label || `麥克風 ${i + 1}`, d.deviceId)));
-    // 指定的麥克風不在清單裡（拔掉了）就顯示「自動」
-    select.value = devices.some((d) => d.deviceId === settings.micId) ? settings.micId : '';
-    select.disabled = devices.length === 0;
   }
 
   private setNoise(change: Partial<typeof settings>) {
