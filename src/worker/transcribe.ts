@@ -11,7 +11,7 @@ export const CORRECTION_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 /** 太短的發話（誤觸、只有開頭）不辨識，省額度也避免 Whisper 亂猜 */
 export const MIN_TRANSCRIBE_SECONDS = 0.6;
 /** 整段音量太小（幾乎都被人聲閘門靜音）就不辨識 */
-const MIN_RMS = 0.003;
+export const MIN_RMS = 0.003;
 const AI_TIMEOUT_MS = 20_000;
 
 /** Whisper 的提示：引導輸出繁體中文與全形標點 */
@@ -153,6 +153,11 @@ export function audioStats(chunks: Uint8Array[]): { seconds: number; rms: number
     }
   }
   return { seconds: total / AUDIO_SAMPLE_RATE, rms: n ? Math.sqrt(sum / n) : 0 };
+}
+
+/** 用長度與音量判斷這段發話值不值得留下紀錄（誤觸、只有開頭、幾乎沒聲音的不留） */
+export function worthKeeping(seconds: number, rms: number): boolean {
+  return seconds >= MIN_TRANSCRIBE_SECONDS && rms >= MIN_RMS;
 }
 
 export function worthTranscribing(chunks: Uint8Array[]): boolean {

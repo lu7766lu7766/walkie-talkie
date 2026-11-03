@@ -1346,11 +1346,6 @@ kbd {
 
 /* ---------- 語音轉文字開關 ---------- */
 
-.log[data-off] .transcript,
-.log[data-off] #transcript-empty {
-  display: none !important;
-}
-
 .host-switch {
   display: flex;
   align-items: center;
@@ -1368,4 +1363,9 @@ kbd {
 .host-switch small {
   font-size: 12px;
   color: var(--muted);
+}
+
+/* 沒開語音轉文字的紀錄：只有時間、發話人與長度 */
+.status-audio .transcript-meta {
+  font-size: 13px;
 }

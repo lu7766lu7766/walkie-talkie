@@ -16,7 +16,8 @@ import {
   type ServerMessage,
   type TranscriptEntry,
 } from '../shared/protocol';
-import { audioStats, createTranscriber, mulawToWav, toBase64, worthTranscribing, type Transcriber } from './transcribe';
+import { createTranscriber, mulawToWav, toBase64, worthKeeping, type Transcriber } from './transcribe';
+import { MULAW_TO_FLOAT } from '../shared/mulaw';
 
 interface Env {
   CHANNEL: DurableObjectNamespace<Channel>;
@@ -25,14 +26,22 @@ interface Env {
   TRANSCRIBE_FAKE?: string;
 }
 
-/** 正在發話的這一段語音（給語音轉文字用），只存在記憶體裡 */
+/**
+ * 正在發話的這一段：長度與音量（決定要不要留紀錄），
+ * 房主開了語音轉文字時另外暫存語音給 AI 辨識。只存在記憶體裡。
+ */
 interface Recording {
   id: string;
   speakerId: string;
   name: string;
   at: number;
+  /** 暫存的語音（沒開語音轉文字時一直是空的，不保存任何聲音） */
   chunks: Uint8Array[];
   bytes: number;
+  /** 收到的語音取樣數與（抽樣的）平方和，用來算長度與音量 */
+  samples: number;
+  sumSq: number;
+  sumN: number;
 }
 
 /** 單段錄音上限：發話上限再多一點緩衝 */
@@ -62,7 +71,7 @@ const MUTED_IDS = 'muted';
 const MAX_MUTED_IDS = 200;
 /** 房間名稱（主題），建立房間的人設定 */
 const TOPIC = 'topic';
-/** 房主是否開啟語音轉文字（沒設定過 = 開啟） */
+/** 房主是否開啟語音轉文字（沒設定過 = 關閉） */
 const TRANSCRIBE = 'transcribe';
 const HOST_KEY_RE = /^[A-Za-z0-9_-]{20,100}$/;
 
@@ -257,18 +266,20 @@ export class Channel extends DurableObject<Env> {
   }
 
   private async transcribeEnabled(): Promise<boolean> {
-    this.transcribeOn ??= (await this.ctx.storage.get<boolean>(TRANSCRIBE)) ?? true;
+    this.transcribeOn ??= (await this.ctx.storage.get<boolean>(TRANSCRIBE)) ?? false;
     return this.transcribeOn;
   }
 
-  /** 房主開關語音轉文字：關閉時不再錄音，也清掉現有的通話紀錄 */
+  /** 房主開關語音轉文字：關閉後不再暫存語音、不送 AI（正在說的那段也丟掉語音），通話紀錄照常 */
   private async setTranscribe(ws: WebSocket, on: boolean) {
     if (!attachment(ws).host) return;
     this.transcribeOn = on;
     await this.ctx.storage.put(TRANSCRIBE, on);
     if (!on) {
-      this.recordings.clear();
-      this.transcripts = [];
+      for (const rec of this.recordings.values()) {
+        rec.chunks = [];
+        rec.bytes = 0;
+      }
     }
     this.broadcast({ t: 'transcribe', on });
   }
@@ -423,15 +434,31 @@ export class Channel extends DurableObject<Env> {
   // ---- 語音轉文字
 
   private startRecording(speaker: Attachment, id: string, at: number) {
-    // 房主關閉了語音轉文字：不錄音，聲音只轉發、不經過 AI
-    if (!this.transcriber || this.transcribeOn === false) return;
-    this.recordings.set(speaker.id, { id, speakerId: speaker.id, name: speaker.name, at, chunks: [], bytes: 0 });
+    this.recordings.set(speaker.id, {
+      id,
+      speakerId: speaker.id,
+      name: speaker.name,
+      at,
+      chunks: [],
+      bytes: 0,
+      samples: 0,
+      sumSq: 0,
+      sumN: 0,
+    });
   }
 
   private record(speakerId: string, bytes: Uint8Array) {
     const rec = this.recordings.get(speakerId);
-    if (!this.transcriber || !rec || rec.bytes >= MAX_RECORDING_BYTES) return;
-    if (bytes[0] !== CODEC_MULAW_16K) return;
+    if (!rec || bytes[0] !== CODEC_MULAW_16K) return;
+    // 長度與音量（每 4 個取樣抽 1 個，省 CPU）
+    rec.samples += bytes.length - 1;
+    for (let i = 1; i < bytes.length; i += 4) {
+      const s = MULAW_TO_FLOAT[bytes[i]];
+      rec.sumSq += s * s;
+      rec.sumN++;
+    }
+    // 只有房主開了語音轉文字才暫存語音給 AI
+    if (!this.transcriber || !this.transcribeOn || rec.bytes >= MAX_RECORDING_BYTES) return;
     rec.chunks.push(bytes.slice(1));
     rec.bytes += bytes.length - 1;
   }
@@ -441,16 +468,23 @@ export class Channel extends DurableObject<Env> {
     const rec = this.recordings.get(speakerId);
     if (!rec) return;
     this.recordings.delete(speakerId);
-    if (!this.transcriber || !worthTranscribing(rec.chunks)) return;
-    const entry: TranscriptEntry = { id: rec.id, speakerId: rec.speakerId, name: rec.name, at: rec.at, text: '', status: 'pending' };
+    const seconds = rec.samples / AUDIO_SAMPLE_RATE;
+    const rms = rec.sumN ? Math.sqrt(rec.sumSq / rec.sumN) : 0;
+    if (!worthKeeping(seconds, rms)) return;
+    const base = { id: rec.id, speakerId: rec.speakerId, name: rec.name, at: rec.at, seconds: Math.round(seconds * 10) / 10 };
+    if (!this.transcriber || !this.transcribeOn || !rec.chunks.length) {
+      // 沒開語音轉文字：只留時間、發話人與長度，大家可以按播放重聽（語音在各自的手機上）
+      this.putTranscript({ ...base, text: '', status: 'audio' });
+      return;
+    }
+    const entry: TranscriptEntry = { ...base, text: '', status: 'pending' };
     this.putTranscript(entry);
     this.ctx.waitUntil(this.transcribe(this.transcriber, rec, entry));
   }
 
   private async transcribe(transcriber: Transcriber, rec: Recording, entry: TranscriptEntry) {
     try {
-      const { seconds } = audioStats(rec.chunks);
-      const text = await transcriber.transcribe(toBase64(mulawToWav(rec.chunks)), seconds);
+      const text = await transcriber.transcribe(toBase64(mulawToWav(rec.chunks)), entry.seconds ?? 0);
       if (!text) {
         this.removeTranscript(entry.id);
         return;
@@ -478,7 +512,8 @@ export class Channel extends DurableObject<Env> {
 
   private recentTranscripts(): TranscriptEntry[] {
     const cutoff = Date.now() - TRANSCRIPT_KEEP_MS;
-    return this.transcripts.filter((e) => e.at >= cutoff && e.status !== 'pending');
+    // 辨識中的、和沒有文字的（新加入的人手機上沒有那段語音可以重播）不給
+    return this.transcripts.filter((e) => e.at >= cutoff && e.status !== 'pending' && e.status !== 'audio');
   }
 
   private sockets(): WebSocket[] {

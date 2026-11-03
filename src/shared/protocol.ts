@@ -63,8 +63,9 @@ export interface RoomInfo {
 }
 
 /**
- * 通話文字紀錄的一筆：發話結束後辨識，pending（辨識中）→ raw（辨識結果）→ corrected（校正後），
- * AI 出錯時為 failed（仍可重播語音）。id 就是這次發話的 talkId。
+ * 通話紀錄的一筆：發話結束後辨識，pending（辨識中）→ raw（辨識結果）→ corrected（校正後），
+ * AI 出錯時為 failed（仍可重播語音）。房主沒開語音轉文字時為 audio：沒有文字，只有時間、發話人與長度，
+ * 可以重播。id 就是這次發話的 talkId。
  */
 export interface TranscriptEntry {
   id: string;
@@ -73,7 +74,9 @@ export interface TranscriptEntry {
   /** 開始發話的時間（伺服器時間，毫秒） */
   at: number;
   text: string;
-  status: 'pending' | 'raw' | 'corrected' | 'failed';
+  status: 'pending' | 'raw' | 'corrected' | 'failed' | 'audio';
+  /** 發話長度（秒） */
+  seconds?: number;
 }
 
 export type ClientMessage =

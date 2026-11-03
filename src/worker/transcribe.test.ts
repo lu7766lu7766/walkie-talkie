@@ -72,3 +72,10 @@ test('corrections are extracted from any response shape and sanity checked', () 
   assert.equal(parseCorrection({ response: '' }, raw), raw);
   assert.equal(parseCorrection({ response: '好的！這是一段要求大家集合的對講機通話，第三組需要在十分鐘內到達門口並且向組長報到。' }, raw), raw, 'model rambling is rejected');
 });
+
+test('worthKeeping：太短或幾乎沒聲音的發話不留紀錄', async () => {
+  const { worthKeeping } = await import('./transcribe.ts');
+  assert.equal(worthKeeping(0.3, 0.1), false);
+  assert.equal(worthKeeping(2, 0.001), false);
+  assert.equal(worthKeeping(2, 0.05), true);
+});

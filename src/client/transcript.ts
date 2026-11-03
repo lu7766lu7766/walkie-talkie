@@ -111,10 +111,11 @@ export class TranscriptLog {
     const meta = document.createElement('div');
     meta.className = 'transcript-meta';
     meta.append(time, name);
-    if (entry.status === 'raw') {
+    if (entry.status === 'raw' || (entry.status === 'audio' && entry.seconds)) {
       const tag = document.createElement('span');
       tag.className = 'transcript-tag';
-      tag.textContent = '校正中…';
+      // 沒開語音轉文字：不顯示文字，標上發話長度
+      tag.textContent = entry.status === 'raw' ? '校正中…' : `${entry.seconds!.toFixed(1)} 秒`;
       meta.append(tag);
     }
     const canPlay = this.opts.hasClip(entry.id);
@@ -130,7 +131,8 @@ export class TranscriptLog {
           : entry.text;
     const body = document.createElement('div');
     body.className = 'transcript-body';
-    body.append(meta, text);
+    body.append(meta);
+    if (entry.status !== 'audio') body.append(text);
     el.replaceChildren(body);
 
     // 右邊的重播鈕：只有這支手機收到（或自己送出）這段語音時才有

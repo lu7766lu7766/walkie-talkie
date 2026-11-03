@@ -409,7 +409,6 @@ export class Room implements PttHandlers {
         break;
       case 'transcribe':
         this.transcribeOn = msg.on;
-        if (!msg.on) this.transcript.clear();
         if (!this.isHost) toast(msg.on ? '房主開啟了語音轉文字' : '房主關閉了語音轉文字');
         break;
       case 'topic':
@@ -601,8 +600,10 @@ export class Room implements PttHandlers {
     $('room-role').hidden = !this.isHost;
     $('host-actions').hidden = !this.isHost;
     $<HTMLInputElement>('transcribe-toggle').checked = this.transcribeOn;
-    $('log').toggleAttribute('data-off', !this.transcribeOn);
     $('transcript-off').hidden = this.transcribeOn;
+    $('transcript-empty').textContent = this.transcribeOn
+      ? '說完話後會自動轉成文字，可以重播，1 分鐘後淡出。'
+      : '說完話後會出現在這裡，可以重播，1 分鐘後淡出。';
     const others = this.members.filter((m) => !m.host);
     $<HTMLButtonElement>('all-vox-off').disabled = !others.some((m) => m.vox);
     $<HTMLButtonElement>('all-mute').disabled = !others.some((m) => !m.muted);
