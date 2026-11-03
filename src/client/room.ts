@@ -259,6 +259,8 @@ export class Room implements PttHandlers {
 
   /** 某個來源開始要求發話（多個來源同時按住時，全部放開才結束） */
   private press(source: TalkSource, preRoll: ArrayBuffer[] = []) {
+    // 上一段還在收尾（等最後一個語音框送出）：馬上結束它，接著開始新的一段，這次按下才不會被忽略
+    if (this.talk === 'stopping') this.finishTalk();
     this.held.add(source);
     this.beginTalk(preRoll);
   }

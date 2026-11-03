@@ -16,17 +16,41 @@ export interface PttHandlers {
 
 export function bindScreenButton(button: HTMLElement, h: PttHandlers): () => void {
   let pointer: number | null = null;
+  /** 放開：可能來自 pointerup，也可能是切換視窗時收不到 pointerup 而由這裡補上 */
+  const release = () => {
+    if (pointer === null) return;
+    const id = pointer;
+    pointer = null;
+    try {
+      if (button.hasPointerCapture(id)) button.releasePointerCapture(id);
+    } catch {
+      // 已經釋放
+    }
+    h.up('screen');
+  };
   const down = (e: PointerEvent) => {
-    if (pointer !== null || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    // 上一次按住時切換了視窗，沒收到放開事件：先結束上一次，這次照常開始（以前會卡住、再也按不動）
+    if (pointer !== null) {
+      if (pointer === e.pointerId) return;
+      release();
+    }
     e.preventDefault();
     pointer = e.pointerId;
-    button.setPointerCapture(e.pointerId);
+    try {
+      // 手指滑出按鈕也繼續算按住
+      button.setPointerCapture(e.pointerId);
+    } catch {
+      // 這根手指已經不在了（極少數情況），照樣開始發話，放開由 blur／下一次按下補上
+    }
     h.down('screen');
   };
   const up = (e: PointerEvent) => {
-    if (e.pointerId !== pointer) return;
-    pointer = null;
-    h.up('screen');
+    if (e.pointerId === pointer) release();
+  };
+  // 視窗失焦、切到背景（切換視窗、切 App、鎖螢幕）時一定收不到放開事件，視為放開
+  const hidden = () => {
+    if (document.visibilityState === 'hidden') release();
   };
   const noMenu = (e: Event) => e.preventDefault();
   button.addEventListener('pointerdown', down);
@@ -34,12 +58,16 @@ export function bindScreenButton(button: HTMLElement, h: PttHandlers): () => voi
   button.addEventListener('pointercancel', up);
   button.addEventListener('lostpointercapture', up);
   button.addEventListener('contextmenu', noMenu);
+  addEventListener('blur', release);
+  document.addEventListener('visibilitychange', hidden);
   return () => {
     button.removeEventListener('pointerdown', down);
     button.removeEventListener('pointerup', up);
     button.removeEventListener('pointercancel', up);
     button.removeEventListener('lostpointercapture', up);
     button.removeEventListener('contextmenu', noMenu);
+    removeEventListener('blur', release);
+    document.removeEventListener('visibilitychange', hidden);
   };
 }
 
@@ -76,13 +104,18 @@ export function bindKeyboard(getKey: () => string, h: PttHandlers): () => void {
     held = false;
     h.up('key');
   };
+  const hidden = () => {
+    if (document.visibilityState === 'hidden') blur();
+  };
   addEventListener('keydown', down);
   addEventListener('keyup', up);
   addEventListener('blur', blur);
+  document.addEventListener('visibilitychange', hidden);
   return () => {
     removeEventListener('keydown', down);
     removeEventListener('keyup', up);
     removeEventListener('blur', blur);
+    document.removeEventListener('visibilitychange', hidden);
   };
 }
 
