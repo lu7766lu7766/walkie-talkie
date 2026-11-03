@@ -6,6 +6,7 @@ import { isInAppBrowser } from './mic-error';
 import { Room } from './room';
 import { fetchRoomInfo, newRoomToken, parseRoomInput, roomLabel, roomPath, roomTokenFromPath } from './room-id';
 import { saveSettings, settings } from './settings';
+import { forgetRoom, myRooms, rememberRoom, touchRoom } from './my-rooms';
 
 /**
  * 畫面與網址：
@@ -56,7 +57,63 @@ function showLobby(message?: string) {
   setError(lobbyError, message);
   renderMicStatus();
   show('lobby-view');
+  void renderMyRooms();
 }
+
+// ---------------------------------------------------------------- 我開的房間
+
+let myRoomsRun = 0;
+
+/** 大廳顯示自己在這台裝置開過、現在還有人在的房間，點一下回去（仍是房主） */
+async function renderMyRooms() {
+  const run = ++myRoomsRun;
+  const rooms = myRooms();
+  const infos = await Promise.all(rooms.map((r) => fetchRoomInfo(r.token)));
+  if (run !== myRoomsRun || room) return;
+  const active = rooms
+    .map((r, i) => ({ ...r, info: infos[i] }))
+    .filter((r) => r.info && r.info.members > 0);
+  for (const r of active) touchRoom(r.token, { active: true, topic: r.info!.topic || r.topic });
+
+  $('my-rooms').hidden = active.length === 0;
+  $('my-rooms-list').replaceChildren(
+    ...active.map((r) => {
+      const li = document.createElement('li');
+      li.className = 'my-room';
+      const info = document.createElement('div');
+      info.className = 'my-room-info';
+      const name = document.createElement('strong');
+      name.textContent = r.info!.topic || r.topic || `房間 ${roomLabel(r.token)}`;
+      const detail = document.createElement('small');
+      detail.textContent = `${r.info!.members} 人在線${r.info!.speaking ? ' · 有人在說話' : ''}`;
+      info.append(name, detail);
+      const enter = document.createElement('button');
+      enter.className = 'btn primary small';
+      enter.textContent = '回到房間';
+      // 必須在點擊事件中同步呼叫（進入房間時要解鎖音訊）
+      enter.addEventListener('click', () => enterFromLobby(r.token));
+      const forget = document.createElement('button');
+      forget.className = 'icon-btn small-icon';
+      forget.title = '從清單移除';
+      forget.setAttribute('aria-label', `從清單移除 ${name.textContent}`);
+      forget.innerHTML = '<svg class="icon"><use href="#i-close" /></svg>';
+      forget.addEventListener('click', () => {
+        forgetRoom(r.token);
+        void renderMyRooms();
+      });
+      li.append(info, enter, forget);
+      return li;
+    }),
+  );
+}
+
+// 停在大廳時定期更新（房間裡的人可能都走了，或又有人回來）
+setInterval(() => {
+  if (!room && !$('lobby-view').hidden && document.visibilityState === 'visible') void renderMyRooms();
+}, 20_000);
+document.addEventListener('visibilitychange', () => {
+  if (!room && !$('lobby-view').hidden && document.visibilityState === 'visible') void renderMyRooms();
+});
 
 function renderMicStatus() {
   $('mic-status').hidden = !engine;
@@ -188,6 +245,9 @@ async function enterRoom(code: string, name: string, errorEl: HTMLElement, creat
   }
 
   room = next;
+  // 自己建立的房間記在這台裝置上，離開後可以從大廳加回去
+  if (created) rememberRoom(next.code, topic);
+  else touchRoom(next.code, { active: true });
   if (location.pathname !== roomPath(next.code)) history.pushState(null, '', roomPath(next.code));
   show('room-view');
 }

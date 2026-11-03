@@ -18,6 +18,7 @@ import { hostKeyFor } from './host-key';
 import { API_ORIGIN, roomIdFor, roomLabel, roomUrl } from './room-id';
 import { clientId, saveSettings, settings, type Mode } from './settings';
 import { ClipStore } from './clips';
+import { touchRoom } from './my-rooms';
 import { renderQr } from './qr';
 import { TranscriptLog } from './transcript';
 import { VoiceDetector } from './vad';
@@ -486,6 +487,7 @@ export class Room implements PttHandlers {
   }
 
   private renderTopic() {
+    touchRoom(this.code, { topic: this.topic });
     $('room-topic').textContent = this.title;
     $('room-code').textContent = roomLabel(this.code);
     $('room-code-wrap').hidden = !this.topic;

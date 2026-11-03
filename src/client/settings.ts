@@ -65,7 +65,8 @@ export const clientId = (() => {
   return id;
 })();
 
-// 舊版會在本機記住「最近的房間」，為了不讓別人從這台裝置看到房間，清掉
+// 舊版會在本機記住「最近加入的房間」（包含別人的房間），為了不讓別人從這台裝置看到，清掉。
+// 現在只記「自己開的房間」，見 my-rooms.ts
 try {
   localStorage.removeItem('wt-recent');
 } catch {
