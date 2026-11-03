@@ -18,8 +18,6 @@ export function describeMicError(err: unknown): string {
     case 'AbortError':
       text = '麥克風被其他程式佔用或無法啟動。請關閉正在使用麥克風的程式（視訊會議、錄音軟體）後再試。';
       break;
-    case 'PausedError':
-      return '離開畫面時關閉了麥克風。按發話鍵或「開啟麥克風」就會重新開啟；在瀏覽器把麥克風設成「一律允許」，回到畫面就會自動開啟。';
     case 'TypeError':
       text = '這個瀏覽器不支援麥克風。請改用 Chrome、Edge 或 Safari 開啟。';
       break;

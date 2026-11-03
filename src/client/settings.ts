@@ -25,8 +25,6 @@ export interface Settings {
   background: boolean;
   /** 保持螢幕常亮（iPhone 背景執行受限，預設開啟） */
   keepScreenOn: boolean;
-  /** 離開畫面（切到其他 App、鎖螢幕）時關閉麥克風，背景仍可收聽，回到畫面自動重新開啟 */
-  releaseMicWhenHidden: boolean;
 }
 
 /**
@@ -54,7 +52,6 @@ export const settings: Settings & { version: number } = {
   beeps: true,
   background: true,
   keepScreenOn: isIos(),
-  releaseMicWhenHidden: true,
   ...stored,
   version: SETTINGS_VERSION,
 };
