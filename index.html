@@ -19,17 +19,13 @@
       <img class="logo" src="/icons/icon.svg" alt="" width="96" height="96" />
       <h1>對講機</h1>
       <section class="card">
-        <label>暱稱<input id="lobby-name" name="nickname" required maxlength="24" placeholder="例如：小明" autocomplete="nickname" /></label>
+        <label>
+          我的暱稱
+          <input id="lobby-name" name="nickname" required maxlength="24" placeholder="例如：小明" autocomplete="nickname" />
+          <small class="field-hint">修改後自動儲存，下次開啟也會沿用</small>
+        </label>
         <button id="create-btn" class="primary">＋ 建立新房間</button>
-        <div class="divider"><span>或加入別人的房間</span></div>
-        <form id="join-form" class="join-row" novalidate>
-          <input id="join-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="6 位數房間號碼" aria-label="房間號碼" autocomplete="off" />
-          <button type="submit" class="ghost">加入</button>
-        </form>
-      </section>
-      <section id="recent-section" class="card" hidden>
-        <h2>最近的房間</h2>
-        <ul id="recent-rooms" class="recent"></ul>
+        <p class="hint">建立後把邀請連結分享給要加入的人。要加入別人的房間，請打開對方傳給你的邀請連結。</p>
       </section>
       <p id="lobby-error" class="error" hidden></p>
       <p id="mic-status" class="hint" hidden>
@@ -43,10 +39,14 @@
     <main id="invite-view" class="view join" hidden>
       <img class="logo" src="/icons/icon.svg" alt="" width="96" height="96" />
       <p class="invite-title">邀請你加入房間</p>
-      <p id="invite-code" class="invite-code"></p>
+      <p class="invite-code">房間 <span id="invite-code"></span></p>
       <p id="invite-info" class="hint"></p>
       <form id="invite-form" class="card">
-        <label>暱稱<input id="invite-name" name="nickname" required maxlength="24" placeholder="例如：小明" autocomplete="nickname" /></label>
+        <label>
+          我的暱稱
+          <input id="invite-name" name="nickname" required maxlength="24" placeholder="例如：小明" autocomplete="nickname" />
+          <small class="field-hint">修改後自動儲存，下次開啟也會沿用</small>
+        </label>
         <button type="submit" class="primary">進入房間</button>
       </form>
       <p id="invite-error" class="error" hidden></p>
@@ -56,8 +56,8 @@
     <main id="room-view" class="view room" hidden>
       <header class="topbar">
         <span id="status-dot" class="dot"></span>
-        <button id="room-code-btn" class="room-name" title="點一下複製房間連結">房間 <span id="room-code"></span></button>
-        <button id="share-btn" class="ghost small">分享</button>
+        <button id="room-code-btn" class="room-name" title="點一下複製邀請連結">房間 <span id="room-code"></span> 🔗</button>
+        <button id="share-btn" class="ghost small">邀請</button>
         <button id="leave-btn" class="ghost small">退出</button>
       </header>
 

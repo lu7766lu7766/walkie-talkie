@@ -12,7 +12,7 @@ import {
   type PttHandlers,
   type PttSource,
 } from './ptt-inputs';
-import { API_ORIGIN, roomIdFor, roomUrl } from './room-id';
+import { API_ORIGIN, roomIdFor, roomLabel, roomUrl } from './room-id';
 import { clientId, saveSettings, settings, type Mode } from './settings';
 import { VoiceDetector } from './vad';
 
@@ -60,7 +60,7 @@ export class Room implements PttHandlers {
   /** 噪音設定面板是否展開（展開時即使沒開即時監聽也顯示音量條） */
   private noiseOpen = false;
 
-  /** 房間號碼，start() 之後才確定 */
+  /** 房間代碼（分享網址的一部分） */
   code = '';
 
   constructor(
@@ -78,13 +78,12 @@ export class Room implements PttHandlers {
    * 必須在「建立／加入房間」的點擊事件裡、第一個 await 之前就啟動音訊與耳機按鍵，
    * 否則行動瀏覽器會以「非使用者操作」為由拒絕播放聲音。
    */
-  async start(code: Promise<string>) {
+  async start(code: string) {
+    this.code = code;
     if (settings.headset) this.headset.enable();
     let roomId: string;
     try {
-      // 建立房間時要先向伺服器確認號碼沒人用，跟啟動音訊同時進行
-      [this.code] = await Promise.all([code, this.engine.start(settings.background, noiseOptions())]);
-      roomId = await roomIdFor(this.code);
+      [roomId] = await Promise.all([roomIdFor(code), this.engine.start(settings.background, noiseOptions())]);
     } catch (err) {
       this.headset.disable();
       throw err;
@@ -109,7 +108,7 @@ export class Room implements PttHandlers {
     });
     this.conn.connect();
 
-    $('room-code').textContent = this.code;
+    $('room-code').textContent = roomLabel(this.code);
 
     this.cleanups.push(
       bindScreenButton($('ptt'), this),
@@ -426,7 +425,7 @@ export class Room implements PttHandlers {
               : settings.vox
                 ? '🎙️ 即時監聽中'
                 : '📻 房間待命中';
-    const detail = `房間 ${this.code}・${this.members.length} 人`;
+    const detail = `房間 ${roomLabel(this.code)}・${this.members.length} 人`;
     if (title + detail === this.mediaStatus) return;
     this.mediaStatus = title + detail;
     setMediaStatus(title, detail);
@@ -550,7 +549,7 @@ export class Room implements PttHandlers {
 
   private async share() {
     const url = roomUrl(this.code);
-    const text = `一起加入對講機房間 ${this.code}`;
+    const text = '一起加入對講機房間（只有收到這個連結的人才進得來）';
     try {
       if (navigator.share) await navigator.share({ title: '對講機', text, url });
       else await this.copyLink();
@@ -562,9 +561,10 @@ export class Room implements PttHandlers {
   private async copyLink() {
     try {
       await navigator.clipboard.writeText(roomUrl(this.code));
-      toast(`已複製房間 ${this.code} 的連結`);
+      toast('已複製邀請連結，傳給要加入的人');
     } catch {
-      toast(`房間號碼：${this.code}`);
+      // 無法存取剪貼簿（例如沒有權限）：讓使用者自己複製
+      prompt('複製這個邀請連結，傳給要加入的人：', roomUrl(this.code));
     }
   }
 

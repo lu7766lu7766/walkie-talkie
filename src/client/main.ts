@@ -3,15 +3,16 @@ import { AudioEngine } from './audio-engine';
 import { $, listen } from './dom';
 import { setupPwa } from './pwa';
 import { Room } from './room';
-import { createRoomCode, fetchRoomInfo, isRoomCode, roomCodeFromPath, roomPath } from './room-id';
-import { forgetRoom, recentRooms, rememberRoom, saveSettings, settings } from './settings';
+import { fetchRoomInfo, newRoomToken, roomLabel, roomPath, roomTokenFromPath } from './room-id';
+import { saveSettings, settings } from './settings';
 
 /**
  * 畫面與網址：
- *   /           大廳：輸入暱稱、建立新房間、輸入房間號碼加入
- *   /r/123456   邀請頁：點分享連結進來的人看到這頁，按一下就進入房間
- *               （瀏覽器規定要使用者點一下才能開麥克風與播放聲音，所以無法完全自動進入）
- * 進入房間後網址維持 /r/123456，按「退出」或瀏覽器的上一頁回到大廳。
+ *   /            大廳：編輯暱稱、建立新房間。大廳不列出任何房間，也不能輸入號碼加入，
+ *                要進入別人的房間只能打開對方分享的邀請網址（避免有人亂入）
+ *   /r/<代碼>    邀請頁：點分享連結進來的人看到這頁，按一下就進入房間
+ *                （瀏覽器規定要使用者點一下才能開麥克風與播放聲音，所以無法完全自動進入）
+ * 進入房間後網址維持 /r/<代碼>，按「退出」或瀏覽器的上一頁回到大廳。
  */
 
 let room: Room | null = null;
@@ -28,7 +29,7 @@ function show(view: (typeof views)[number]) {
 }
 
 function route() {
-  const code = roomCodeFromPath(location.pathname);
+  const code = roomTokenFromPath(location.pathname);
   if (room) {
     if (code === room.code) return;
     room.leave(); // 在房間裡按了瀏覽器的上一頁
@@ -41,14 +42,11 @@ function route() {
 // ---------------------------------------------------------------- 大廳
 
 const lobbyName = $<HTMLInputElement>('lobby-name');
-const joinCode = $<HTMLInputElement>('join-code');
 const lobbyError = $('lobby-error');
 
 function showLobby(message?: string) {
   lobbyName.value = settings.name;
-  joinCode.value = '';
   setError(lobbyError, message);
-  renderRecent();
   renderMicStatus();
   show('lobby-view');
 }
@@ -63,57 +61,15 @@ listen($('mic-release'), 'click', () => {
   renderMicStatus();
 });
 
-function renderRecent() {
-  const codes = recentRooms();
-  $('recent-section').hidden = codes.length === 0;
-  $('recent-rooms').replaceChildren(
-    ...codes.map((code) => {
-      const li = document.createElement('li');
-      const join = document.createElement('button');
-      join.className = 'chip';
-      join.textContent = code;
-      join.addEventListener('click', () => enterFromLobby(Promise.resolve(code)));
-      const remove = document.createElement('button');
-      remove.className = 'chip-remove';
-      remove.setAttribute('aria-label', `從最近的房間移除 ${code}`);
-      remove.textContent = '×';
-      remove.addEventListener('click', () => {
-        forgetRoom(code);
-        renderRecent();
-      });
-      li.append(join, remove);
-      return li;
-    }),
-  );
-}
-
-listen($('create-btn'), 'click', () => enterFromLobby(createRoomCode()));
-
-listen($('join-form'), 'submit', (e) => {
-  e.preventDefault();
-  const code = joinCode.value.trim();
-  if (!isRoomCode(code)) {
-    setError(lobbyError, '請輸入 6 位數的房間號碼。');
-    joinCode.focus();
-    return;
-  }
-  enterFromLobby(Promise.resolve(code));
-});
-
-// 只允許輸入數字
-listen(joinCode, 'input', () => {
-  joinCode.value = joinCode.value.replace(/\D/g, '').slice(0, 6);
-});
-
-function enterFromLobby(code: Promise<string>) {
+listen($('create-btn'), 'click', () => {
   const name = lobbyName.value.trim();
   if (!name) {
     setError(lobbyError, '請先輸入暱稱。');
     lobbyName.focus();
     return;
   }
-  void enterRoom(code, name, lobbyError);
-}
+  void enterRoom(newRoomToken(), name, lobbyError);
+});
 
 // ---------------------------------------------------------------- 邀請頁（點分享連結進來）
 
@@ -123,7 +79,7 @@ let inviteCode = '';
 
 function showInvite(code: string) {
   inviteCode = code;
-  $('invite-code').textContent = code;
+  $('invite-code').textContent = roomLabel(code);
   inviteName.value = settings.name;
   setError(inviteError);
   const info = $('invite-info');
@@ -148,7 +104,7 @@ listen($('invite-form'), 'submit', (e) => {
     inviteName.focus();
     return;
   }
-  void enterRoom(Promise.resolve(inviteCode), name, inviteError);
+  void enterRoom(inviteCode, name, inviteError);
 });
 
 listen($('invite-lobby-btn'), 'click', () => {
@@ -159,9 +115,8 @@ listen($('invite-lobby-btn'), 'click', () => {
 // ---------------------------------------------------------------- 進入／離開房間
 
 /** 必須在點擊事件中同步呼叫（Room.start 的同步階段會解鎖音訊） */
-async function enterRoom(code: Promise<string>, name: string, errorEl: HTMLElement) {
-  settings.name = name;
-  saveSettings();
+async function enterRoom(code: string, name: string, errorEl: HTMLElement) {
+  saveName(name);
   setError(errorEl);
   const buttons = document.querySelectorAll<HTMLButtonElement>('#lobby-view button, #invite-view button');
   buttons.forEach((b) => (b.disabled = true));
@@ -186,7 +141,6 @@ async function enterRoom(code: Promise<string>, name: string, errorEl: HTMLEleme
   }
 
   room = next;
-  rememberRoom(next.code);
   if (location.pathname !== roomPath(next.code)) history.pushState(null, '', roomPath(next.code));
   show('room-view');
 }
@@ -194,8 +148,26 @@ async function enterRoom(code: Promise<string>, name: string, errorEl: HTMLEleme
 function onLeave(message?: string) {
   room = null;
   // 按「退出」離開：回到大廳的網址；按上一頁離開：網址已經是大廳了
-  if (roomCodeFromPath(location.pathname)) history.pushState(null, '', '/');
+  if (roomTokenFromPath(location.pathname)) history.pushState(null, '', '/');
   showLobby(message);
+}
+
+// ---------------------------------------------------------------- 暱稱
+
+/** 暱稱一修改就存起來，之後打開網頁、進任何房間都沿用 */
+function saveName(name: string) {
+  const trimmed = name.trim().slice(0, 24);
+  if (trimmed === settings.name) return;
+  settings.name = trimmed;
+  saveSettings();
+}
+
+for (const input of [lobbyName, inviteName]) {
+  listen(input, 'input', () => saveName(input.value));
+  listen(input, 'change', () => {
+    saveName(input.value);
+    input.value = settings.name;
+  });
 }
 
 function setError(el: HTMLElement, message?: string) {

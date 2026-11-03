@@ -22,8 +22,11 @@ interface Attachment {
   since: number;
 }
 
-/** 頻道 id 是前端用「頻道名稱 + 密碼」算出的 SHA-256 前綴，伺服器永遠看不到明文。 */
-const ROOM_RE = /^[a-f0-9]{16,64}$/;
+/**
+ * 房間 id 是前端用分享網址裡的 128 bit 隨機代碼算出的 SHA-256 前 160 bit，Worker 收到的只有這個雜湊值。
+ * 伺服器不提供任何列出房間的 API，只有拿到分享網址的人算得出房間 id。
+ */
+const ROOM_RE = /^[a-f0-9]{40}$/;
 const CLIENT_ID_RE = /^[A-Za-z0-9-]{8,64}$/;
 const OPEN = 1;
 

@@ -440,71 +440,6 @@ kbd {
 
 /* ---------- 大廳與邀請頁 ---------- */
 
-.divider {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.divider::before,
-.divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--panel-2);
-}
-
-.join-row {
-  display: flex;
-  gap: 8px;
-}
-
-.join-row input {
-  flex: 1;
-  min-width: 0;
-  font: inherit;
-  font-size: 20px;
-  letter-spacing: 0.2em;
-  text-align: center;
-  color: var(--text);
-  background: var(--panel-2);
-  border: 1px solid transparent;
-  border-radius: 10px;
-  padding: 10px;
-  outline: none;
-}
-
-.recent {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.recent li {
-  display: flex;
-  background: var(--panel-2);
-  border-radius: 999px;
-}
-
-.chip {
-  padding: 8px 4px 8px 14px;
-  background: none;
-  font-size: 16px;
-  letter-spacing: 0.1em;
-  font-variant-numeric: tabular-nums;
-}
-
-.chip-remove {
-  padding: 8px 12px 8px 6px;
-  background: none;
-  color: var(--muted);
-}
-
 .invite-title {
   margin: 0;
   color: var(--muted);
@@ -512,10 +447,17 @@ kbd {
 
 .invite-code {
   margin: 0;
-  font-size: 44px;
+  font-size: 32px;
   font-weight: 800;
-  letter-spacing: 0.15em;
-  font-variant-numeric: tabular-nums;
+}
+
+#invite-code {
+  letter-spacing: 0.05em;
+}
+
+.field-hint {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .room-name {
@@ -576,10 +518,6 @@ input[type='checkbox']:disabled + span {
   opacity: 0.5;
 }
 
-.join-row input::placeholder {
-  letter-spacing: normal;
-  font-size: 16px;
-}
 
 .link {
   background: none;

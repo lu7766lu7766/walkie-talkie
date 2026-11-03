@@ -51,19 +51,11 @@ export const clientId = (() => {
   return id;
 })();
 
-const MAX_RECENT = 5;
-
-/** 最近進入過的房間號碼（新的在前） */
-export function recentRooms(): string[] {
-  return readJson<string[]>('wt-recent', []);
-}
-
-export function rememberRoom(code: string) {
-  writeJson('wt-recent', [code, ...recentRooms().filter((c) => c !== code)].slice(0, MAX_RECENT));
-}
-
-export function forgetRoom(code: string) {
-  writeJson('wt-recent', recentRooms().filter((c) => c !== code));
+// 舊版會在本機記住「最近的房間」，為了不讓別人從這台裝置看到房間，清掉
+try {
+  localStorage.removeItem('wt-recent');
+} catch {
+  // 私密瀏覽等情況無法存取
 }
 
 function readJson<T>(key: string, fallback: T): T {
