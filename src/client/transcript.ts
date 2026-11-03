@@ -5,6 +5,9 @@ const VISIBLE_MS = 60_000;
 /** 淡出動畫長度（要和 CSS 的 transition 一致） */
 const FADE_MS = 1_500;
 
+const PLAY_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11a.6.6 0 0 0 .9.5l9-5.5a.6.6 0 0 0 0-1l-9-5.5a.6.6 0 0 0-.9.5z"/></svg>';
+const STOP_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5"/></svg>';
+
 interface Item {
   el: HTMLLIElement;
   entry: TranscriptEntry;
@@ -122,7 +125,7 @@ export class TranscriptLog {
         ? '辨識中…'
         : entry.status === 'failed'
           ? canPlay
-            ? '（無法辨識，可按 ▶ 重聽）'
+            ? '（無法辨識，可按右邊重聽）'
             : '（無法辨識）'
           : entry.text;
     const body = document.createElement('div');
@@ -136,7 +139,7 @@ export class TranscriptLog {
       const play = document.createElement('button');
       play.type = 'button';
       play.className = `transcript-play${playing ? ' playing' : ''}`;
-      play.textContent = playing ? '■' : '▶';
+      play.innerHTML = playing ? STOP_ICON : PLAY_ICON;
       play.setAttribute('aria-label', playing ? '停止播放' : `重新播放 ${entry.name} 的發話`);
       play.addEventListener('click', () => this.opts.onPlay(entry.id));
       el.append(play);

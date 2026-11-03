@@ -57,7 +57,8 @@ export function bindKeyboard(getKey: () => string, h: PttHandlers): () => void {
     return e.code === key || e.key === key;
   };
   const down = (e: KeyboardEvent) => {
-    if (!matches(e) || (e.target as Element | null)?.closest?.(TYPING_TARGET)) return;
+    // 設定等面板打開時不攔截，空白鍵留給面板裡的開關
+    if (!matches(e) || (e.target as Element | null)?.closest?.(TYPING_TARGET) || document.querySelector('dialog[open]')) return;
     e.preventDefault();
     if (e.repeat || held) return;
     held = true;

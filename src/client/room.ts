@@ -138,21 +138,29 @@ export class Room implements PttHandlers {
     $('room-token').textContent = this.code;
     $('room-link').textContent = roomUrl(this.code);
     renderQr($('invite-qr'), roomUrl(this.code), `加入房間 ${roomLabel(this.code)} 的 QR code`);
-    this.toggleInvitePanel(false);
 
     this.cleanups.push(
       bindScreenButton($('ptt'), this),
       bindKeyboard(() => settings.key, this),
       listen($('leave-btn'), 'click', () => this.leave()),
-      listen($('share-btn'), 'click', () => this.share()),
-      listen($('room-code-btn'), 'click', () => this.toggleInvitePanel()),
+      listen($('share-btn'), 'click', () => openSheet('invite-sheet')),
+      listen($('room-code-btn'), 'click', () => openSheet('invite-sheet')),
+      listen($('settings-btn'), 'click', () => {
+        openSheet('settings-sheet');
+        // 設定面板打開時，即使沒開自動偵測也顯示麥克風音量，方便調整噪音門檻
+        this.noiseOpen = true;
+        this.vad.reset();
+      }),
+      listen($('settings-sheet'), 'close', () => {
+        this.noiseOpen = false;
+        this.vad.reset();
+      }),
+      ...bindSheets(),
+      listen($('native-share'), 'click', () => void this.share()),
       listen($('copy-token'), 'click', () => void this.copyToken()),
       listen($('copy-link'), 'click', () => void this.copyLink()),
       listen($('invite-qr'), 'click', () => this.showQr(true)),
       listen($('qr-overlay'), 'click', () => this.showQr(false)),
-      listen(document, 'keydown', (e) => {
-        if ((e as KeyboardEvent).key === 'Escape') this.showQr(false);
-      }),
       listen($('mic-retry'), 'click', () => void this.retryMic()),
       // 任何互動都順便喚醒被系統暫停的 AudioContext（iOS 來電、切到背景後常見）
       listen(
@@ -181,7 +189,7 @@ export class Room implements PttHandlers {
     clearInterval(this.talkTimer);
     clearTimeout(this.stopTimer);
     this.stopReplay?.();
-    this.showQr(false);
+    document.querySelectorAll('dialog').forEach((d) => d.close());
     this.transcript.destroy();
     this.clips.clear();
     void this.releaseWakeLock();
@@ -413,14 +421,14 @@ export class Room implements PttHandlers {
     } else if (this.talk === 'talking' || this.talk === 'stopping') {
       const secs = Math.floor((Date.now() - this.talkStarted) / 1000);
       const what = this.byVox ? '偵測到說話，傳送中' : '發話中';
-      [text, state] = [`🔴 ${what} ${secs}s／${MAX_TALK_MS / 1000}s`, 'talking'];
+      [text, state] = [`${what} ${secs}s／${MAX_TALK_MS / 1000}s`, 'talking'];
     } else if (this.talk === 'requesting') {
       [text, state] = ['請求發話中…', 'requesting'];
     } else if (otherTalking) {
-      [text, state] = [`🔊 ${this.speaker!.name} 正在說話`, 'receiving'];
+      [text, state] = [`${this.speaker!.name} 正在說話`, 'receiving'];
     } else {
       const listening = settings.vox && this.engine.micLive;
-      [text, state] = [listening ? '🎙️ 即時監聽中，說話就會自動傳送' : '房間空閒', 'idle'];
+      [text, state] = [listening ? '自動偵測中，開口說話就會傳送' : '房間空閒', 'idle'];
     }
     banner.textContent = text;
     banner.dataset.state = state;
@@ -445,8 +453,8 @@ export class Room implements PttHandlers {
             : settings.mode === 'toggle'
               ? '按一下說話'
               : '按住說話';
-    $<HTMLInputElement>('vox').checked = settings.vox;
-    $('vox-meter-row').hidden = noMic || (!settings.vox && !this.noiseOpen);
+    for (const r of voxInputs()) r.checked = r.value === (settings.vox ? 'on' : 'off');
+    $('vox-meter-row').hidden = noMic || !settings.vox;
 
     $('member-count').textContent = String(this.members.length);
     const list = $('members');
@@ -499,15 +507,20 @@ export class Room implements PttHandlers {
     if (this.meterFrame) return;
     this.meterFrame = requestAnimationFrame(() => {
       this.meterFrame = 0;
-      const meter = $('vox-meter');
       const pct = (db: number) => `${Math.min(100, Math.max(0, ((db + 70) / 60) * 100)).toFixed(1)}%`;
-      meter.style.setProperty('--level', pct(this.vad.levelDb));
-      meter.style.setProperty('--threshold', pct(this.vad.thresholdDb));
-      meter.dataset.state = this.voxActive ? 'speaking' : settings.vox && this.voxBlocked() ? 'blocked' : 'idle';
-      const badge = $('voice-badge');
-      badge.hidden = this.vad.voiceProb < 0;
-      badge.classList.toggle('on', this.vad.voiceProb >= 0 && this.vad.isVoice);
-      badge.textContent = `人聲 ${Math.round(Math.max(0, this.vad.voiceProb) * 100)}%`;
+      // 主畫面（自動偵測）與設定面板（噪音門檻）各有一條音量表
+      const speaking = settings.vox ? this.voxActive : this.vad.isVoice;
+      for (const id of ['vox-meter', 'noise-meter']) {
+        const meter = $(id);
+        meter.style.setProperty('--level', pct(this.vad.levelDb));
+        meter.style.setProperty('--threshold', pct(this.vad.thresholdDb));
+        meter.dataset.state = speaking ? 'speaking' : settings.vox && this.voxBlocked() ? 'blocked' : 'idle';
+      }
+      for (const badge of document.querySelectorAll<HTMLElement>('.voice-badge')) {
+        badge.hidden = this.vad.voiceProb < 0;
+        badge.classList.toggle('on', this.vad.voiceProb >= 0 && this.vad.isVoice);
+        badge.textContent = `人聲 ${Math.round(Math.max(0, this.vad.voiceProb) * 100)}%`;
+      }
     });
   }
 
@@ -545,12 +558,10 @@ export class Room implements PttHandlers {
     modeInputs.forEach((r) => (r.checked = r.value === settings.mode));
     const headset = $<HTMLInputElement>('headset');
     const beeps = $<HTMLInputElement>('beeps');
-    const vox = $<HTMLInputElement>('vox');
     const denoise = $<HTMLInputElement>('denoise');
     const voiceGate = $<HTMLInputElement>('voice-gate');
     const noiseGate = $<HTMLInputElement>('noise-gate');
     const voiceThreshold = $<HTMLInputElement>('voice-threshold');
-    const noiseCard = $<HTMLDetailsElement>('noise-card');
     denoise.checked = settings.denoise;
     voiceGate.checked = settings.voiceGate;
     noiseGate.value = String(settings.noiseGateDb);
@@ -584,15 +595,11 @@ export class Room implements PttHandlers {
         if (headset.checked) this.headset.enable();
         else this.headset.disable();
       }),
-      listen(vox, 'change', () => this.setVox(vox.checked)),
+      ...voxInputs().map((r) => listen(r, 'change', () => this.setVox(r.value === 'on'))),
       listen(denoise, 'change', () => this.setNoise({ denoise: denoise.checked })),
       listen(voiceGate, 'change', () => this.setNoise({ voiceGate: voiceGate.checked })),
       listen(noiseGate, 'input', () => this.setNoise({ noiseGateDb: Number(noiseGate.value) })),
       listen(voiceThreshold, 'input', () => this.setNoise({ voiceThreshold: Number(voiceThreshold.value) })),
-      listen(noiseCard, 'toggle', () => {
-        this.noiseOpen = noiseCard.open;
-        this.render();
-      }),
       listen(background, 'change', () => {
         settings.background = background.checked;
         saveSettings();
@@ -658,20 +665,13 @@ export class Room implements PttHandlers {
     }
   }
 
-  /** 全螢幕顯示大張 QR code，方便在旁邊的人掃描 */
+  /** 全螢幕顯示大張 QR code，方便在旁邊的人掃描（Esc 由 <dialog> 自己處理） */
   private showQr(open: boolean) {
-    const overlay = $('qr-overlay');
-    if (open) {
-      renderQr($('qr-large'), roomUrl(this.code), `加入房間 ${roomLabel(this.code)} 的 QR code`);
-      $('qr-room').textContent = roomLabel(this.code);
-    }
-    overlay.hidden = !open;
-  }
-
-  /** 點標題的「房間 xxxx 🔗」展開／收合房間代碼與邀請連結 */
-  private toggleInvitePanel(open = $('invite-panel').hidden) {
-    $('invite-panel').hidden = !open;
-    $('room-code-btn').setAttribute('aria-expanded', String(open));
+    const overlay = $<HTMLDialogElement>('qr-overlay');
+    if (!open) return overlay.close();
+    renderQr($('qr-large'), roomUrl(this.code), `加入房間 ${roomLabel(this.code)} 的 QR code`);
+    $('qr-room').textContent = roomLabel(this.code);
+    if (!overlay.open) overlay.showModal();
   }
 
   private copyLink() {
@@ -698,6 +698,26 @@ export class Room implements PttHandlers {
     await this.wakeLock?.release().catch(() => {});
     this.wakeLock = undefined;
   }
+}
+
+function voxInputs() {
+  return [...document.querySelectorAll<HTMLInputElement>('input[name="vox"]')];
+}
+
+/** 打開底部面板（成員與邀請、設定） */
+function openSheet(id: string) {
+  const sheet = $<HTMLDialogElement>(id);
+  if (!sheet.open) sheet.showModal();
+}
+
+/** 面板的關閉鈕；點面板外面（背景）也關閉 */
+function bindSheets(): (() => void)[] {
+  return [...document.querySelectorAll<HTMLDialogElement>('dialog.sheet')].flatMap((sheet) => [
+    listen(sheet.querySelector('.sheet-close')!, 'click', () => sheet.close()),
+    listen(sheet, 'click', (e) => {
+      if (e.target === sheet) sheet.close();
+    }),
+  ]);
 }
 
 async function copyText(text: string, done: string, fallbackPrompt: string) {

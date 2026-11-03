@@ -26,6 +26,14 @@ export function toast(text: string) {
   const el = $('toast');
   el.textContent = text;
   el.hidden = false;
+  // 用 popover 放到最上層，面板（<dialog>）打開時才看得到；不支援的瀏覽器照舊顯示
+  if (el.showPopover) {
+    if (el.matches(':popover-open')) el.hidePopover();
+    el.showPopover();
+  }
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (el.hidden = true), 2500);
+  toastTimer = setTimeout(() => {
+    el.hidden = true;
+    if (el.hidePopover && el.matches(':popover-open')) el.hidePopover();
+  }, 2500);
 }

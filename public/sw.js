@@ -1,6 +1,6 @@
 // 對講機 Service Worker：離線也能打開 App 外殼（通話本身仍需網路）。
 // 有雜湊檔名的 /assets/* 永遠不變，採 cache-first；頁面採 network-first，確保部署後立即拿到新版。
-const CACHE = 'walkie-talkie-v2';
+const CACHE = 'walkie-talkie-v3';
 const SHELL = ['/', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (event) => {
