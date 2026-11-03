@@ -169,9 +169,18 @@ export class AudioEngine {
   /**
    * 麥克風被系統收走時（來電、其他 App 搶用、iOS 切到背景）重新取得。
    * 麥克風還在運作時什麼都不做，所以可以放心頻繁呼叫。
+   *
+   * auto：不是使用者明確要求（點畫面任意處、回到前景、串流被系統結束後的自動重試）。
+   * 這時只有在瀏覽器已經「允許」麥克風時才重開，避免一直跳出詢問視窗。
    */
-  ensureMic(): Promise<void> {
+  ensureMic(auto = false): Promise<void> {
     if (this.micLive || this.ctx.state === 'closed') return Promise.resolve();
+    if (auto) {
+      return this.reopening ?? micPermission().then((state) => {
+        const askedBefore = isPermissionError(this.micError);
+        if (state === 'granted' || (state === 'unknown' && !askedBefore)) return this.ensureMic();
+      });
+    }
     this.reopening ??= this.openMic()
       .then(
         () => (this.micError = null),
@@ -187,6 +196,8 @@ export class AudioEngine {
 
   private async openMic() {
     if (!navigator.mediaDevices?.getUserMedia) throw new TypeError('getUserMedia is not supported');
+    // 記錄瀏覽器跳出詢問的次數：一直被問的人，畫面上提示怎麼設定成「一律允許」
+    if ((await micPermission()) === 'prompt') countMicPrompt();
     const mic = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
@@ -199,7 +210,7 @@ export class AudioEngine {
     for (const track of mic.getAudioTracks()) {
       track.addEventListener('ended', () => {
         this.onMicChange();
-        setTimeout(() => void this.ensureMic(), 1000);
+        setTimeout(() => void this.ensureMic(true), 1000);
       });
     }
   }
@@ -342,3 +353,36 @@ async function loadRnnoise(): Promise<ArrayBuffer | null> {
 const SIMD_SUPPORTED = WebAssembly.validate(
   new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]),
 );
+
+/** 瀏覽器目前對麥克風的權限；不支援查詢（例如部分 Firefox）時回傳 unknown */
+export async function micPermission(): Promise<PermissionState | 'unknown'> {
+  try {
+    return (await navigator.permissions.query({ name: 'microphone' as PermissionName })).state;
+  } catch {
+    return 'unknown';
+  }
+}
+
+function isPermissionError(err: unknown): boolean {
+  const name = (err as { name?: string } | null)?.name;
+  return name === 'NotAllowedError' || name === 'SecurityError';
+}
+
+const PROMPTS_KEY = 'wt-mic-prompts';
+
+function countMicPrompt() {
+  try {
+    localStorage.setItem(PROMPTS_KEY, String(micPromptCount() + 1));
+  } catch {
+    // 無法儲存就算了
+  }
+}
+
+/** 這台裝置被瀏覽器詢問麥克風權限的次數 */
+export function micPromptCount(): number {
+  try {
+    return Number(localStorage.getItem(PROMPTS_KEY)) || 0;
+  } catch {
+    return 0;
+  }
+}

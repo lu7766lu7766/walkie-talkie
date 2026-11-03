@@ -26,7 +26,16 @@ export const CLOSE_REPLACED = 4000;
 export interface Member {
   id: string;
   name: string;
+  /** 房主：建立房間的人（同一台裝置重新進入仍是房主） */
+  host: boolean;
+  /** 開著自動偵測（聲控發話） */
+  vox: boolean;
+  /** 被房主禁言：不能發話 */
+  muted: boolean;
 }
+
+/** 房主的管理動作 */
+export type ModAction = 'vox-off' | 'mute' | 'unmute';
 
 /** GET /api/channel/:id/info 的回應 */
 export interface RoomInfo {
@@ -48,7 +57,18 @@ export interface TranscriptEntry {
   status: 'pending' | 'raw' | 'corrected' | 'failed';
 }
 
-export type ClientMessage = { t: 'talk' } | { t: 'release' };
+export type ClientMessage =
+  | { t: 'talk' }
+  | { t: 'release' }
+  /**
+   * 連線（含重連）後送出：目前的自動偵測狀態，以及房主金鑰。
+   * hostKey 是用這台裝置的密鑰對房間代碼算出的 HMAC，伺服器只存它的雜湊；
+   * claim 表示「這個房間是我剛建立的」，只有房間裡沒有別人、也還沒有房主時才會被接受。
+   */
+  | { t: 'hello'; vox: boolean; hostKey?: string; claim?: boolean }
+  | { t: 'vox'; on: boolean }
+  /** 房主管理：target 是成員 id，'*' 表示房主以外的所有人 */
+  | { t: 'mod'; action: ModAction; target: string };
 
 export type ServerMessage =
   | {
@@ -64,7 +84,10 @@ export type ServerMessage =
   | { t: 'members'; members: Member[] }
   /** talkId：這次發話的 id，對應之後的通話文字，讓大家可以重播這段語音 */
   | { t: 'granted'; talkId: string }
-  | { t: 'denied'; speaker: Member | null }
+  /** muted：被房主禁言而不能發話 */
+  | { t: 'denied'; speaker: Member | null; muted?: boolean }
+  /** 房主對你做了管理動作（by 是房主暱稱） */
+  | { t: 'moderated'; action: ModAction; by: string }
   | { t: 'revoked' }
   | { t: 'speaker'; speaker: Member | null; talkId?: string }
   | { t: 'transcript'; entry: TranscriptEntry }

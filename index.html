@@ -95,9 +95,9 @@
     <main id="room-view" class="view room" hidden>
       <header class="topbar">
         <button id="leave-btn" class="icon-btn" title="退出房間" aria-label="退出房間"><svg class="icon"><use href="#i-back" /></svg></button>
-        <button id="room-code-btn" class="room-title" title="成員與邀請" aria-haspopup="dialog">
+        <button id="room-code-btn" class="room-title" title="成員" aria-haspopup="dialog">
           <strong>房間 <span id="room-code"></span></strong>
-          <small><span id="status-dot" class="dot"></span><span id="member-count">0</span> 人在線</small>
+          <small><span id="status-dot" class="dot"></span><span id="member-count">0</span> 人在線<span id="room-role" hidden> · 你是房主</span></small>
         </button>
         <button id="share-btn" class="icon-btn" title="邀請" aria-label="邀請" aria-haspopup="dialog"><svg class="icon"><use href="#i-invite" /></svg></button>
         <button id="settings-btn" class="icon-btn" title="設定" aria-label="設定" aria-haspopup="dialog"><svg class="icon"><use href="#i-settings" /></svg></button>
@@ -105,6 +105,13 @@
 
       <section class="stage">
         <p id="speaker-banner" class="status" data-state="offline" aria-live="polite">連線中…</p>
+        <button id="quick-mute" class="btn small danger" hidden></button>
+
+        <div id="mic-tip" class="tip" hidden>
+          <p><strong>每次都要按「允許」麥克風？</strong></p>
+          <p id="mic-tip-text"></p>
+          <button id="mic-tip-close" class="link">知道了</button>
+        </div>
 
         <div id="mic-notice" class="notice" hidden>
           <p><strong>沒有可用的麥克風，目前只能收聽</strong></p>
@@ -163,9 +170,25 @@
         </div>
         <button id="native-share" class="btn primary block"><svg class="icon"><use href="#i-share" /></svg>分享邀請連結</button>
         <p class="hint center">只有拿到連結或代碼的人進得來。</p>
+      </div>
+    </dialog>
 
-        <h3 class="group-title">成員</h3>
-        <ul id="members" class="members"></ul>
+    <!-- ================================================================ 成員（房主可管理） -->
+    <dialog id="members-sheet" class="sheet" aria-labelledby="members-sheet-title">
+      <header class="sheet-head">
+        <h2 id="members-sheet-title">成員（<span id="members-sheet-count">0</span>）</h2>
+        <button class="icon-btn sheet-close" aria-label="關閉"><svg class="icon"><use href="#i-close" /></svg></button>
+      </header>
+      <div class="sheet-body">
+        <div id="host-actions" class="host-actions" hidden>
+          <p class="hint">你是房主：可以關閉別人的自動偵測，或禁言一直佔線的人（被禁言的人只能收聽）。</p>
+          <div class="host-buttons">
+            <button id="all-vox-off" class="btn ghost small">全部關閉自動偵測</button>
+            <button id="all-mute" class="btn ghost small">全部禁言</button>
+            <button id="all-unmute" class="btn ghost small">全部解除禁言</button>
+          </div>
+        </div>
+        <ul id="members" class="member-list"></ul>
       </div>
     </dialog>
 

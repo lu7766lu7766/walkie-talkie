@@ -8,6 +8,7 @@ import {
   MAX_TALK_MS,
   type ClientMessage,
   type Member,
+  type ModAction,
   type RoomInfo,
   type ServerMessage,
   type TranscriptEntry,
@@ -41,7 +42,17 @@ interface Attachment {
   name: string;
   talking: boolean;
   since: number;
+  host: boolean;
+  vox: boolean;
+  muted: boolean;
 }
+
+/** 存在 Durable Object storage 的資料（房間沒人時也保留） */
+const HOST_KEY_HASH = 'hostKeyHash';
+/** 被禁言的 client id；重新整理、重連後仍然禁言 */
+const MUTED_IDS = 'muted';
+const MAX_MUTED_IDS = 200;
+const HOST_KEY_RE = /^[A-Za-z0-9_-]{20,100}$/;
 
 /**
  * 房間 id 是前端用分享網址裡的 128 bit 隨機代碼算出的 SHA-256 前 160 bit，Worker 收到的只有這個雜湊值。
@@ -110,9 +121,10 @@ export class Channel extends DurableObject<Env> {
     }
     if (this.sockets().length >= MAX_MEMBERS) return new Response('Channel full', { status: 403 });
 
+    const muted = (await this.mutedIds()).includes(id);
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ id, name, talking: false, since: 0 } satisfies Attachment);
+    server.serializeAttachment({ id, name, talking: false, since: 0, host: false, vox: false, muted } satisfies Attachment);
 
     send(server, {
       t: 'welcome',
@@ -146,6 +158,73 @@ export class Channel extends DurableObject<Env> {
     }
     if (msg.t === 'talk') this.requestFloor(ws);
     else if (msg.t === 'release') this.releaseFloor(ws);
+    else if (msg.t === 'hello') await this.hello(ws, msg);
+    else if (msg.t === 'vox') this.update(ws, { vox: !!msg.on });
+    else if (msg.t === 'mod') await this.moderate(ws, msg.action, msg.target);
+  }
+
+  // ---- 房主與管理
+
+  /** 連線後回報自動偵測狀態並驗證房主身分 */
+  private async hello(ws: WebSocket, msg: Extract<ClientMessage, { t: 'hello' }>) {
+    let host = false;
+    if (typeof msg.hostKey === 'string' && HOST_KEY_RE.test(msg.hostKey)) {
+      const hash = await sha256(msg.hostKey);
+      const stored = await this.ctx.storage.get<string>(HOST_KEY_HASH);
+      if (stored) host = stored === hash;
+      else if (msg.claim && this.sockets().every((s) => s === ws || attachment(s).id === attachment(ws).id)) {
+        // 剛建立的房間：房間裡只有自己、也還沒有房主，才能成為房主
+        await this.ctx.storage.put(HOST_KEY_HASH, hash);
+        host = true;
+      }
+    }
+    // 房主不會被禁言
+    this.update(ws, { vox: !!msg.vox, host, ...(host ? { muted: false } : {}) });
+  }
+
+  private update(ws: WebSocket, change: Partial<Attachment>) {
+    if (ws.readyState !== OPEN) return;
+    ws.serializeAttachment({ ...attachment(ws), ...change });
+    this.broadcast({ t: 'members', members: this.members() });
+  }
+
+  private async moderate(ws: WebSocket, action: ModAction, target: string) {
+    const me = attachment(ws);
+    if (!me.host || !['vox-off', 'mute', 'unmute'].includes(action)) return;
+    const targets = this.sockets().filter((s) => {
+      const a = attachment(s);
+      return !a.host && (target === '*' || a.id === target);
+    });
+
+    if (action === 'vox-off') {
+      // 由對方的 App 關掉自動偵測（麥克風在對方手機上，伺服器關不了），之後對方會回報新的狀態
+      for (const s of targets) if (attachment(s).vox) send(s, { t: 'moderated', action, by: me.name });
+      return;
+    }
+
+    const mute = action === 'mute';
+    const ids = new Set(await this.mutedIds());
+    if (target === '*' && !mute) ids.clear();
+    for (const s of targets) {
+      const a = attachment(s);
+      if (mute) ids.add(a.id);
+      else ids.delete(a.id);
+      if (a.muted === mute) continue;
+      s.serializeAttachment({ ...a, muted: mute, talking: mute ? false : a.talking });
+      if (mute && a.talking) {
+        // 正在說話就立刻收回發話權
+        send(s, { t: 'revoked' });
+        this.broadcast({ t: 'speaker', speaker: null }, s);
+        this.finishRecording(a.id);
+      }
+      send(s, { t: 'moderated', action, by: me.name });
+    }
+    await this.ctx.storage.put(MUTED_IDS, [...ids].slice(-MAX_MUTED_IDS));
+    this.broadcast({ t: 'members', members: this.members() });
+  }
+
+  private async mutedIds(): Promise<string[]> {
+    return (await this.ctx.storage.get<string[]>(MUTED_IDS)) ?? [];
   }
 
   async webSocketClose(ws: WebSocket) {
@@ -160,6 +239,11 @@ export class Channel extends DurableObject<Env> {
     const me = attachment(ws);
     const now = Date.now();
     const current = this.speakerSocket();
+
+    if (me.muted) {
+      send(ws, { t: 'denied', speaker: this.speaker(), muted: true });
+      return;
+    }
 
     if (current && current !== ws) {
       const holder = attachment(current);
@@ -298,7 +382,12 @@ function attachment(ws: WebSocket): Attachment {
 }
 
 function toMember(a: Attachment): Member {
-  return { id: a.id, name: a.name };
+  return { id: a.id, name: a.name, host: !!a.host, vox: !!a.vox, muted: !!a.muted };
+}
+
+async function sha256(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 function send(ws: WebSocket, msg: ServerMessage) {

@@ -1,4 +1,4 @@
-import { MAX_TALK_MS, type Member, type ServerMessage } from '../shared/protocol';
+import { MAX_TALK_MS, type Member, type ModAction, type ServerMessage } from '../shared/protocol';
 import type { AudioEngine, NoiseOptions } from './audio-engine';
 import { Connection } from './connection';
 import { $, listen, setLevel, toast, vibrate } from './dom';
@@ -12,7 +12,9 @@ import {
   type PttHandlers,
   type PttSource,
 } from './ptt-inputs';
-import { describeMicError } from './mic-error';
+import { describeMicError, micSetupTip } from './mic-error';
+import { micPromptCount } from './audio-engine';
+import { hostKeyFor } from './host-key';
 import { API_ORIGIN, roomIdFor, roomLabel, roomUrl } from './room-id';
 import { clientId, saveSettings, settings, type Mode } from './settings';
 import { ClipStore } from './clips';
@@ -81,6 +83,11 @@ export class Room implements PttHandlers {
   /** 噪音設定面板是否展開（展開時即使沒開即時監聽也顯示音量條） */
   private noiseOpen = false;
 
+  /** 這台裝置對這個房間的房主金鑰 */
+  private hostKey?: string;
+  /** 這個房間是剛剛在大廳建立的（第一次連線時宣告成為房主） */
+  private created = false;
+
   /** 房間代碼（分享網址的一部分） */
   code = '';
 
@@ -100,12 +107,17 @@ export class Room implements PttHandlers {
    * 必須在「建立／加入房間」的點擊事件裡、第一個 await 之前就啟動音訊與耳機按鍵，
    * 否則行動瀏覽器會以「非使用者操作」為由拒絕播放聲音。
    */
-  async start(code: string) {
+  async start(code: string, created = false) {
     this.code = code;
+    this.created = created;
     if (settings.headset) this.headset.enable();
     let roomId: string;
     try {
-      [roomId] = await Promise.all([roomIdFor(code), this.engine.start(settings.background, noiseOptions())]);
+      [roomId, this.hostKey] = await Promise.all([
+        roomIdFor(code),
+        hostKeyFor(code).catch(() => undefined),
+        this.engine.start(settings.background, noiseOptions()),
+      ]);
     } catch (err) {
       this.headset.disable();
       this.transcript.destroy();
@@ -117,6 +129,8 @@ export class Room implements PttHandlers {
     this.conn = new Connection(url, {
       onOpen: () => {
         this.online = true;
+        // 每次連線（含重連）都回報自動偵測狀態並驗證房主身分
+        this.conn.send({ t: 'hello', vox: settings.vox, hostKey: this.hostKey, claim: this.created });
         this.render();
       },
       onClose: (reason) => {
@@ -144,7 +158,20 @@ export class Room implements PttHandlers {
       bindKeyboard(() => settings.key, this),
       listen($('leave-btn'), 'click', () => this.leave()),
       listen($('share-btn'), 'click', () => openSheet('invite-sheet')),
-      listen($('room-code-btn'), 'click', () => openSheet('invite-sheet')),
+      listen($('room-code-btn'), 'click', () => openSheet('members-sheet')),
+      listen($('members'), 'click', (e) => this.onMemberAction(e)),
+      listen($('all-vox-off'), 'click', () => this.moderate('vox-off', '*')),
+      listen($('all-mute'), 'click', () => this.moderate('mute', '*')),
+      listen($('all-unmute'), 'click', () => this.moderate('unmute', '*')),
+      listen($('quick-mute'), 'click', () => this.speaker && this.moderate('mute', this.speaker.id)),
+      listen($('mic-tip-close'), 'click', () => {
+        try {
+          localStorage.setItem('wt-mic-tip-dismissed', '1');
+        } catch {
+          // 無法儲存就只在這次隱藏
+        }
+        $('mic-tip').hidden = true;
+      }),
       listen($('settings-btn'), 'click', () => {
         openSheet('settings-sheet');
         // 設定面板打開時，即使沒開自動偵測也顯示麥克風音量，方便調整噪音門檻
@@ -168,7 +195,7 @@ export class Room implements PttHandlers {
         'pointerdown',
         () => {
           this.engine.resumeIfNeeded();
-          void this.engine.ensureMic();
+          void this.engine.ensureMic(true);
         },
         true,
       ),
@@ -227,6 +254,12 @@ export class Room implements PttHandlers {
 
   private beginTalk(preRoll: ArrayBuffer[]) {
     if (this.talk !== 'idle' || !this.online) return;
+    if (this.muted) {
+      this.held.clear();
+      this.engine.busy();
+      toast('你已被房主禁言，暫時不能發話');
+      return;
+    }
     if (!this.engine.micLive) {
       // 沒有麥克風：只能收聽。順便再試一次（使用者可能剛接上麥克風）
       this.held.clear();
@@ -319,6 +352,7 @@ export class Room implements PttHandlers {
   private voxBlocked(): boolean {
     return (
       !this.online ||
+      this.muted ||
       (!!this.speaker && this.speaker.id !== this.me) ||
       this.engine.outputBusy ||
       Date.now() < this.voxCooldownUntil
@@ -328,6 +362,7 @@ export class Room implements PttHandlers {
   private setVox(on: boolean) {
     settings.vox = on;
     saveSettings();
+    this.conn.send({ t: 'vox', on });
     if (!on && this.voxActive) {
       this.voxActive = false;
       this.unpress('vox');
@@ -371,13 +406,21 @@ export class Room implements PttHandlers {
           this.render();
         }, 250);
         break;
+      case 'moderated':
+        this.onModerated(msg.action, msg.by);
+        break;
       case 'denied':
       case 'revoked': {
         if (msg.t === 'denied' && this.talk !== 'requesting') return;
         const byVox = this.byVox;
         this.resetTalk();
         if (msg.t === 'denied') this.speaker = msg.speaker;
-        if (byVox) {
+        if (msg.t === 'denied' && msg.muted) {
+          if (!byVox) {
+            this.engine.busy();
+            toast('你已被房主禁言，暫時不能發話');
+          }
+        } else if (byVox) {
           // 聲控被擋（例如兩人同時開口）：安靜退讓，稍後再偵測
           this.voxCooldownUntil = Date.now() + VOX_COOLDOWN_MS;
         } else {
@@ -425,7 +468,10 @@ export class Room implements PttHandlers {
     } else if (this.talk === 'requesting') {
       [text, state] = ['請求發話中…', 'requesting'];
     } else if (otherTalking) {
-      [text, state] = [`${this.speaker!.name} 正在說話`, 'receiving'];
+      const how = this.speaker!.vox ? '（自動偵測）' : '';
+      [text, state] = [`${this.speaker!.name} 正在說話${how}`, 'receiving'];
+    } else if (this.muted) {
+      [text, state] = ['你已被房主禁言，只能收聽', 'idle'];
     } else {
       const listening = settings.vox && this.engine.micLive;
       [text, state] = [listening ? '自動偵測中，開口說話就會傳送' : '房間空閒', 'idle'];
@@ -438,8 +484,9 @@ export class Room implements PttHandlers {
     $('mic-notice').hidden = !noMic;
     if (noMic) $('mic-notice-text').textContent = describeMicError(this.engine.micError);
     if (noMic && state === 'idle') state = 'nomic';
+    if (this.muted && (state === 'idle' || state === 'nomic')) state = 'muted';
     ptt.dataset.state = state;
-    label.textContent = state === 'nomic' ? '沒有麥克風・只能收聽' :
+    label.textContent = state === 'muted' ? '已被禁言' : state === 'nomic' ? '沒有麥克風・只能收聽' :
       state === 'talking'
         ? this.byVox
           ? '傳送中'
@@ -456,16 +503,95 @@ export class Room implements PttHandlers {
     for (const r of voxInputs()) r.checked = r.value === (settings.vox ? 'on' : 'off');
     $('vox-meter-row').hidden = noMic || !settings.vox;
 
-    $('member-count').textContent = String(this.members.length);
-    const list = $('members');
-    list.replaceChildren(
-      ...this.members.map((m) => {
+    // 房主可以直接禁言正在說話的人（例如開著自動偵測忘記關、一直佔線）
+    const quick = $('quick-mute');
+    quick.hidden = !(this.isHost && otherTalking && !this.speaker!.host);
+    if (!quick.hidden) quick.textContent = `禁言 ${this.speaker!.name}`;
+
+    $('mic-tip').hidden = !this.engine.micLive || micPromptCount() < 2 || tipDismissed();
+    if (!$('mic-tip').hidden) $('mic-tip-text').textContent = micSetupTip();
+
+    this.renderMembers();
+  }
+
+  private get myMember(): Member | undefined {
+    return this.members.find((m) => m.id === this.me);
+  }
+
+  private get isHost(): boolean {
+    return !!this.myMember?.host;
+  }
+
+  private get muted(): boolean {
+    return !!this.myMember?.muted;
+  }
+
+  /** 成員面板：房主排最前面，房主看得到每個人的管理按鈕 */
+  private renderMembers() {
+    const count = String(this.members.length);
+    $('member-count').textContent = count;
+    $('members-sheet-count').textContent = count;
+    $('room-role').hidden = !this.isHost;
+    $('host-actions').hidden = !this.isHost;
+    const others = this.members.filter((m) => !m.host);
+    $<HTMLButtonElement>('all-vox-off').disabled = !others.some((m) => m.vox);
+    $<HTMLButtonElement>('all-mute').disabled = !others.some((m) => !m.muted);
+    $<HTMLButtonElement>('all-unmute').disabled = !others.some((m) => m.muted);
+
+    const sorted = [...this.members].sort((a, b) => Number(b.host) - Number(a.host));
+    $('members').replaceChildren(
+      ...sorted.map((m) => {
         const li = document.createElement('li');
-        li.textContent = m.name + (m.id === this.me ? '（你）' : '');
+        li.className = 'member';
         if (m.id === this.speaker?.id) li.classList.add('speaking');
+        const info = document.createElement('div');
+        info.className = 'member-info';
+        const name = document.createElement('strong');
+        name.textContent = m.name + (m.id === this.me ? '（你）' : '');
+        const tags = document.createElement('small');
+        tags.textContent = [
+          m.host && '房主',
+          m.id === this.speaker?.id && '說話中',
+          m.vox && '自動偵測',
+          m.muted && '已禁言',
+        ]
+          .filter(Boolean)
+          .join(' · ');
+        info.append(name, tags);
+        li.append(info);
+        if (this.isHost && !m.host) {
+          const actions = document.createElement('div');
+          actions.className = 'member-actions';
+          if (m.vox) actions.append(actionButton('關閉自動偵測', 'vox-off', m.id));
+          actions.append(m.muted ? actionButton('解除禁言', 'unmute', m.id) : actionButton('禁言', 'mute', m.id, true));
+          li.append(actions);
+        }
         return li;
       }),
     );
+  }
+
+  private onMemberAction(e: Event) {
+    const button = (e.target as Element).closest<HTMLButtonElement>('button[data-action]');
+    if (button) this.moderate(button.dataset.action as ModAction, button.dataset.id!);
+  }
+
+  private moderate(action: ModAction, target: string) {
+    if (this.isHost) this.conn.send({ t: 'mod', action, target });
+  }
+
+  /** 房主對自己做了管理動作 */
+  private onModerated(action: ModAction, by: string) {
+    if (action === 'vox-off') {
+      if (settings.vox) this.setVox(false);
+      toast(`房主 ${by} 關閉了你的自動偵測，改用按住發話`);
+    } else if (action === 'mute') {
+      this.resetTalk();
+      toast(`房主 ${by} 將你禁言，暫時只能收聽`);
+    } else {
+      toast(`房主 ${by} 解除了你的禁言`);
+    }
+    vibrate([80]);
   }
 
   /** 送出語音框，同時留一份給自己的通話文字重播 */
@@ -548,7 +674,7 @@ export class Room implements PttHandlers {
     if (document.visibilityState !== 'visible') return;
     // 回到前景：喚醒被系統暫停的音訊、iOS 會關掉的麥克風、耳機按鍵與螢幕常亮
     this.engine.resumeIfNeeded();
-    void this.engine.ensureMic();
+    void this.engine.ensureMic(true);
     this.headset.keepAlive();
     void this.keepAwake();
   }
@@ -697,6 +823,24 @@ export class Room implements PttHandlers {
   private async releaseWakeLock() {
     await this.wakeLock?.release().catch(() => {});
     this.wakeLock = undefined;
+  }
+}
+
+function actionButton(text: string, action: ModAction, id: string, danger = false) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `btn small ${danger ? 'danger' : 'ghost'}`;
+  button.textContent = text;
+  button.dataset.action = action;
+  button.dataset.id = id;
+  return button;
+}
+
+function tipDismissed(): boolean {
+  try {
+    return localStorage.getItem('wt-mic-tip-dismissed') === '1';
+  } catch {
+    return false;
   }
 }
 

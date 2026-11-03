@@ -32,3 +32,25 @@ export function describeMicError(err: unknown): string {
 export function isInAppBrowser(): boolean {
   return /\bLine\/|FBAN|FBAV|Instagram|MicroMessenger/i.test(navigator.userAgent);
 }
+
+/**
+ * 一直被詢問麥克風權限的人：依平台說明怎麼設定成「一律允許」。
+ * 網頁沒辦法替使用者決定權限，只能減少不必要的詢問（見 AudioEngine.ensureMic）並教使用者設定。
+ */
+export function micSetupTip(): string {
+  const ua = navigator.userAgent;
+  const ios = /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const standalone =
+    matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone;
+  if (ios && standalone) {
+    return 'iPhone 從主畫面開啟的 App，iOS 可能在每次重新開啟時詢問，這是系統的限制。開著 App 時換房間、回大廳都不會再問。';
+  }
+  if (ios) {
+    return 'iPhone／iPad：點網址列左邊的「大小」圖示 →「網站設定」→「麥克風」選「允許」；或到「設定」App →「Safari」→「麥克風」選「允許」。';
+  }
+  if (/Firefox\//.test(ua)) return 'Firefox：詢問時勾選「記住這項決定」再按允許。';
+  if (/Android/.test(ua)) {
+    return 'Android：詢問時選「每次造訪時都允許」（不要選「僅限這次」）；或點網址列左邊的圖示 →「權限」→ 麥克風改成允許。';
+  }
+  return '電腦：詢問時選「每次造訪時都允許」（不要選「僅允許這一次」）；或點網址列左邊的圖示，把「麥克風」設成允許。';
+}

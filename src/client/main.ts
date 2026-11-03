@@ -64,7 +64,7 @@ listen($('mic-release'), 'click', () => {
   renderMicStatus();
 });
 
-listen($('create-btn'), 'click', () => enterFromLobby(newRoomToken()));
+listen($('create-btn'), 'click', () => enterFromLobby(newRoomToken(), true));
 
 listen($('join-form'), 'submit', (e) => {
   e.preventDefault();
@@ -100,14 +100,14 @@ function joinFromInput() {
 }
 
 /** 必須在點擊事件中同步呼叫（enterRoom 的同步階段會解鎖音訊） */
-function enterFromLobby(token: string) {
+function enterFromLobby(token: string, created = false) {
   const name = lobbyName.value.trim();
   if (!name) {
     setError(lobbyError, '請先輸入暱稱。');
     lobbyName.focus();
     return;
   }
-  void enterRoom(token, name, lobbyError);
+  void enterRoom(token, name, lobbyError, created);
 }
 
 // ---------------------------------------------------------------- 邀請頁（點分享連結進來）
@@ -154,7 +154,7 @@ listen($('invite-lobby-btn'), 'click', () => {
 // ---------------------------------------------------------------- 進入／離開房間
 
 /** 必須在點擊事件中同步呼叫（Room.start 的同步階段會解鎖音訊） */
-async function enterRoom(code: string, name: string, errorEl: HTMLElement) {
+async function enterRoom(code: string, name: string, errorEl: HTMLElement, created = false) {
   saveName(name);
   setError(errorEl);
   const buttons = document.querySelectorAll<HTMLButtonElement>('#lobby-view button, #invite-view button');
@@ -163,7 +163,7 @@ async function enterRoom(code: string, name: string, errorEl: HTMLElement) {
   engine ??= new AudioEngine();
   const next = new Room(engine, onLeave);
   try {
-    await next.start(code);
+    await next.start(code, created);
   } catch (err) {
     // 啟動失敗（例如拒絕麥克風權限）：整個丟掉，下次重新建立
     engine?.stop();
