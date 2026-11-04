@@ -185,6 +185,7 @@ function showInvite(code: string) {
   inviteName.value = settings.name;
   setError(inviteError);
   const info = $('invite-info');
+  $('invite-form').hidden = false;
   info.textContent = '查詢房間狀態中…';
   void fetchRoomInfo(code).then((r) => {
     if (inviteCode !== code) return;
@@ -192,8 +193,11 @@ function showInvite(code: string) {
       title.textContent = r.topic;
       document.title = r.topic;
     }
+    $('invite-form').hidden = !!r?.closed;
     info.textContent = !r
       ? ''
+      : r.closed
+        ? '這個房間已被房主關閉，無法進入。'
       : r.members === 0
         ? '房間裡目前沒有人，你會是第一個進入的人。'
         : `房間裡目前有 ${r.members} 人${r.speaking ? '，有人正在說話' : ''}。`;

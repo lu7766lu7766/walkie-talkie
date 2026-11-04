@@ -33,6 +33,12 @@ export const RELAY_HEADER_BYTES = 3;
 export const MAX_TOPIC_LENGTH = 30;
 /** 自訂 close code：同一個 client id 從別處重新連線，舊連線被取代。 */
 export const CLOSE_REPLACED = 4000;
+/** 自訂 close code：被房主移出房間，不要自動重連。 */
+export const CLOSE_KICKED = 4001;
+/** 自訂 close code：房主關閉了房間，不要自動重連。 */
+export const CLOSE_ROOM_CLOSED = 4002;
+/** 自訂 close code：被移出的人獲得房主允許，馬上重新連線就會正式進入房間。 */
+export const CLOSE_ADMITTED = 4003;
 
 export interface Member {
   id: string;
@@ -51,8 +57,16 @@ export interface Member {
   talkId?: string;
 }
 
-/** 房主的管理動作 */
-export type ModAction = 'vox-off' | 'mute' | 'unmute';
+/**
+ * 房主的管理動作。kick：移出房間（之後要再進來必須經過房主允許，同一台裝置換分頁也一樣）。
+ */
+export type ModAction = 'vox-off' | 'mute' | 'unmute' | 'kick';
+
+/** 被移出後想回到房間、正在等房主允許的人 */
+export interface Knock {
+  id: string;
+  name: string;
+}
 
 /** GET /api/channel/:id/info 的回應 */
 export interface RoomInfo {
@@ -60,6 +74,8 @@ export interface RoomInfo {
   speaking: boolean;
   /** 房間名稱（主題），沒有設定時為空字串 */
   topic: string;
+  /** 房主已經關閉這個房間，不能再進入 */
+  closed?: boolean;
 }
 
 /**
@@ -94,7 +110,11 @@ export type ClientMessage =
   /** 房主修改房間名稱 */
   | { t: 'topic'; topic: string }
   /** 房主開關語音轉文字 */
-  | { t: 'transcribe'; on: boolean };
+  | { t: 'transcribe'; on: boolean }
+  /** 房主關閉房間：所有人移出，之後不能再進入 */
+  | { t: 'close-room' }
+  /** 房主回覆被移出的人回到房間的請求 */
+  | { t: 'admit'; id: string; allow: boolean };
 
 export type ServerMessage =
   | {
@@ -121,6 +141,18 @@ export type ServerMessage =
   | { t: 'denied'; reason: 'muted' | 'full' }
   /** 房主對你做了管理動作（by 是房主暱稱） */
   | { t: 'moderated'; action: ModAction; by: string }
+  /** 你被房主移出房間（by 是房主暱稱），接著伺服器會以 CLOSE_KICKED 關閉連線 */
+  | { t: 'kicked'; by: string }
+  /**
+   * 你之前被房主移出，這次連線沒有進入房間，正在等房主允許（hostHere：房主現在在不在房間）。
+   * 房主允許時收到 admitted，接著伺服器以 CLOSE_ADMITTED 關閉，重新連線就會進入房間；拒絕時收到 kicked。
+   */
+  | { t: 'waiting'; hostHere: boolean }
+  | { t: 'admitted' }
+  /** 給房主：正在等待允許回到房間的人 */
+  | { t: 'knocks'; list: Knock[] }
+  /** 房主關閉了房間（by 是房主暱稱；空字串表示加入時房間早已關閉），接著伺服器以 CLOSE_ROOM_CLOSED 關閉連線 */
+  | { t: 'closed'; by: string }
   | { t: 'revoked' }
   | { t: 'transcript'; entry: TranscriptEntry }
   | { t: 'transcript-remove'; id: string };

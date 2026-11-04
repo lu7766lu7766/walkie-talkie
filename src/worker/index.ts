@@ -1,7 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
   AUDIO_SAMPLE_RATE,
+  CLOSE_ADMITTED,
+  CLOSE_KICKED,
   CLOSE_REPLACED,
+  CLOSE_ROOM_CLOSED,
   CODEC_MULAW_16K,
   MAX_FRAME_BYTES,
   MAX_MEMBERS,
@@ -10,6 +13,7 @@ import {
   MAX_TOPIC_LENGTH,
   RELAY_HEADER_BYTES,
   type ClientMessage,
+  type Knock,
   type Member,
   type ModAction,
   type RoomInfo,
@@ -62,6 +66,10 @@ interface Attachment {
   host: boolean;
   vox: boolean;
   muted: boolean;
+  /** 房主金鑰的雜湊：每台裝置對這個房間固定，被移出時用它擋住同一台裝置再進來 */
+  keyHash?: string;
+  /** 被移出過的人：不算房間成員（收不到也送不出任何東西），等房主允許 */
+  waiting?: boolean;
 }
 
 /** 存在 Durable Object storage 的資料（房間沒人時也保留） */
@@ -69,6 +77,17 @@ const HOST_KEY_HASH = 'hostKeyHash';
 /** 被禁言的 client id；重新整理、重連後仍然禁言 */
 const MUTED_IDS = 'muted';
 const MAX_MUTED_IDS = 200;
+/** 被房主移出的人（client id 與裝置金鑰雜湊），不能再進來，直到房主解除 */
+const KICKED = 'kicked';
+const MAX_KICKED = 200;
+/** 房主關閉了房間：其他資料都清掉，只留這個標記，之後任何人都不能再進入 */
+const CLOSED = 'closed';
+
+/** 一個被移出的人：client id（每個分頁一個）與裝置金鑰雜湊（同一台裝置換分頁也擋得住） */
+interface KickedEntry {
+  id: string;
+  key?: string;
+}
 /** 房間名稱（主題），建立房間的人設定 */
 const TOPIC = 'topic';
 /** 房主是否開啟語音轉文字（沒設定過 = 關閉） */
@@ -168,6 +187,8 @@ export class Channel extends DurableObject<Env> {
   private transcripts: TranscriptEntry[] = [];
   /** 語音轉文字開關的快取（DO 休眠醒來後是 null，要重新讀取） */
   private transcribeOn: boolean | null = null;
+  /** 房主已關閉房間（讀過 storage 後快取） */
+  private closed = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -180,7 +201,12 @@ export class Channel extends DurableObject<Env> {
     // 房間資訊：建立房間時確認號碼沒人在用、邀請頁顯示目前人數
     if (url.pathname.endsWith('/info')) {
       return Response.json(
-        { members: this.sockets().length, speaking: this.speaking().length > 0, topic: await this.topic() } satisfies RoomInfo,
+        {
+          members: this.sockets().length,
+          speaking: this.speaking().length > 0,
+          topic: await this.topic(),
+          ...((await this.isClosed()) ? { closed: true } : {}),
+        } satisfies RoomInfo,
         { headers: { 'Cache-Control': 'no-store' } },
       );
     }
@@ -190,10 +216,21 @@ export class Channel extends DurableObject<Env> {
     const name = cleanName(url.searchParams.get('name'));
 
     // 同一個分頁斷線重連時，舊連線可能還沒被偵測到斷掉，直接取代它
-    for (const ws of this.sockets()) {
+    for (const ws of this.allSockets()) {
       if (attachment(ws).id === id) this.disconnect(ws, CLOSE_REPLACED, 'replaced');
     }
     if (this.sockets().length >= MAX_MEMBERS) return new Response('Channel full', { status: 403 });
+
+    // 房間已關閉、或被房主移出的人：告訴他原因後關閉（不放進房間，不用休眠模式）
+    if (await this.isClosed()) return refuse({ t: 'closed', by: '' }, CLOSE_ROOM_CLOSED);
+    // 被房主移出過的人：不進入房間（不送成員名單與通話紀錄），等房主允許
+    if ((await this.kicked()).some((k) => k.id === id)) {
+      const { 0: client, 1: server } = new WebSocketPair();
+      this.ctx.acceptWebSocket(server);
+      server.serializeAttachment({ id, name, slot: 0, talking: false, since: 0, host: false, vox: false, muted: true, waiting: true } satisfies Attachment);
+      this.knock(server);
+      return new Response(null, { status: 101, webSocket: client });
+    }
 
     const muted = (await this.mutedIds()).includes(id);
     // 要在 acceptWebSocket 之前算：新連線被接受後還沒有 attachment
@@ -254,6 +291,8 @@ export class Channel extends DurableObject<Env> {
     } catch {
       return;
     }
+    // 等待房主允許的人不是成員，什麼都不能做（只能等，或自己關掉連線）
+    if (attachment(ws).waiting) return;
     // 開始發話時要知道要不要錄音轉文字；休眠醒來後先讀回設定
     await this.transcribeEnabled();
     if (msg.t === 'talk') this.requestFloor(ws);
@@ -263,6 +302,8 @@ export class Channel extends DurableObject<Env> {
     else if (msg.t === 'mod') await this.moderate(ws, msg.action, msg.target);
     else if (msg.t === 'topic') await this.setTopic(ws, msg.topic);
     else if (msg.t === 'transcribe') await this.setTranscribe(ws, !!msg.on);
+    else if (msg.t === 'close-room') await this.closeRoom(ws);
+    else if (msg.t === 'admit') await this.admit(ws, msg.id, !!msg.allow);
   }
 
   private async transcribeEnabled(): Promise<boolean> {
@@ -303,8 +344,18 @@ export class Channel extends DurableObject<Env> {
   /** 連線後回報自動偵測狀態並驗證房主身分 */
   private async hello(ws: WebSocket, msg: Extract<ClientMessage, { t: 'hello' }>) {
     let host = false;
+    let keyHash: string | undefined;
     if (typeof msg.hostKey === 'string' && HOST_KEY_RE.test(msg.hostKey)) {
-      const hash = await sha256(msg.hostKey);
+      const hash = (keyHash = await sha256(msg.hostKey));
+      // 被移出過的裝置（換了分頁、重新整理）：不能再進來
+      if ((await this.kicked()).some((k) => k.key === hash)) {
+        // 被移出過的裝置（換了分頁、重新整理）：退出成員名單，等房主允許
+        this.releaseFloor(ws);
+        ws.serializeAttachment({ ...attachment(ws), keyHash, waiting: true, talking: false });
+        this.broadcast({ t: 'members', members: this.members() });
+        this.knock(ws);
+        return;
+      }
       const stored = await this.ctx.storage.get<string>(HOST_KEY_HASH);
       if (stored) host = stored === hash;
       else if (msg.claim && this.sockets().every((s) => s === ws || attachment(s).id === attachment(ws).id)) {
@@ -319,7 +370,8 @@ export class Channel extends DurableObject<Env> {
       }
     }
     // 房主不會被禁言
-    this.update(ws, { vox: !!msg.vox, host, ...(host ? { muted: false } : {}) });
+    this.update(ws, { vox: !!msg.vox, host, keyHash, ...(host ? { muted: false } : {}) });
+    if (host) send(ws, { t: 'knocks', list: this.knocks() });
   }
 
   private update(ws: WebSocket, change: Partial<Attachment>) {
@@ -330,7 +382,8 @@ export class Channel extends DurableObject<Env> {
 
   private async moderate(ws: WebSocket, action: ModAction, target: string) {
     const me = attachment(ws);
-    if (!me.host || !['vox-off', 'mute', 'unmute'].includes(action)) return;
+    if (!me.host || !['vox-off', 'mute', 'unmute', 'kick'].includes(action)) return;
+    if (action === 'kick') return this.kick(me, target);
     const targets = this.sockets().filter((s) => {
       const a = attachment(s);
       return !a.host && (target === '*' || a.id === target);
@@ -360,6 +413,100 @@ export class Channel extends DurableObject<Env> {
     }
     await this.ctx.storage.put(MUTED_IDS, [...ids].slice(-MAX_MUTED_IDS));
     this.broadcast({ t: 'members', members: this.members() });
+  }
+
+  /** 房主把人移出房間（一次一個人）；之後他要再進來必須經過房主允許 */
+  private async kick(me: Attachment, target: string) {
+    if (target === '*') return;
+    const targets = this.sockets().filter((s) => !attachment(s).host && attachment(s).id === target);
+    if (!targets.length) return;
+    let list = await this.kicked();
+    for (const s of targets) {
+      const a = attachment(s);
+      list = list.filter((k) => k.id !== a.id);
+      list.push({ id: a.id, ...(a.keyHash ? { key: a.keyHash } : {}) });
+      // 對方的 App 收到後退出房間、完全釋放麥克風；伺服器同時關掉連線，不管對方 App 有沒有照做
+      send(s, { t: 'kicked', by: me.name });
+      this.disconnect(s, CLOSE_KICKED, 'kicked');
+    }
+    await this.ctx.storage.put(KICKED, list.slice(-MAX_KICKED));
+  }
+
+  /** 被移出的人想回來：告訴他在等房主，並通知房主 */
+  private knock(ws: WebSocket) {
+    send(ws, { t: 'waiting', hostHere: this.sockets().some((s) => attachment(s).host) });
+    this.sendKnocks();
+  }
+
+  private knocks(): Knock[] {
+    return this.allSockets()
+      .filter((s) => s.readyState === OPEN && attachment(s).waiting)
+      .map((s) => ({ id: attachment(s).id, name: attachment(s).name }));
+  }
+
+  private sendKnocks() {
+    const list = this.knocks();
+    for (const s of this.sockets()) if (attachment(s).host) send(s, { t: 'knocks', list });
+  }
+
+  /** 房主允許或拒絕被移出的人回到房間 */
+  private async admit(ws: WebSocket, id: unknown, allow: boolean) {
+    const me = attachment(ws);
+    if (!me.host || typeof id !== 'string') return;
+    const waiting = this.allSockets().filter((s) => s.readyState === OPEN && attachment(s).waiting && attachment(s).id === id);
+    if (!waiting.length) return this.sendKnocks();
+    if (allow) {
+      // 從名單移除（client id 與裝置金鑰都要），對方重新連線就會正式進入房間
+      const keys = new Set(waiting.map((s) => attachment(s).keyHash).filter(Boolean));
+      const list = (await this.kicked()).filter((k) => k.id !== id && !(k.key && keys.has(k.key)));
+      await this.ctx.storage.put(KICKED, list);
+    }
+    for (const s of waiting) {
+      send(s, allow ? { t: 'admitted' } : { t: 'kicked', by: me.name });
+      try {
+        s.close(allow ? CLOSE_ADMITTED : CLOSE_KICKED, allow ? 'admitted' : 'kicked');
+      } catch {
+        // 已經關閉
+      }
+    }
+    this.sendKnocks();
+  }
+
+  private async kicked(): Promise<KickedEntry[]> {
+    const list = await this.ctx.storage.get<KickedEntry[]>(KICKED);
+    return Array.isArray(list) ? list : [];
+  }
+
+  /**
+   * 房主關閉房間：通知所有人（各自的 App 退出房間並完全釋放麥克風）、關掉所有連線，
+   * 清掉房間名稱、房主、禁言、通話紀錄等資料，只留「已關閉」標記，之後用同一個連結也進不來。
+   */
+  private async closeRoom(ws: WebSocket) {
+    const me = attachment(ws);
+    if (!me.host) return;
+    await this.ctx.storage.deleteAll();
+    await this.ctx.storage.put(CLOSED, true);
+    this.closed = true;
+    this.transcribeOn = false;
+    this.transcripts = [];
+    for (const rec of this.recordings.values()) {
+      rec.chunks = [];
+      rec.bytes = 0;
+    }
+    this.recordings.clear();
+    for (const s of this.allSockets()) {
+      send(s, { t: 'closed', by: me.name });
+      try {
+        s.close(CLOSE_ROOM_CLOSED, 'closed');
+      } catch {
+        // 已經關閉
+      }
+    }
+  }
+
+  private async isClosed(): Promise<boolean> {
+    this.closed ||= (await this.ctx.storage.get<boolean>(CLOSED)) === true;
+    return this.closed;
   }
 
   private async mutedIds(): Promise<string[]> {
@@ -408,7 +555,9 @@ export class Channel extends DurableObject<Env> {
 
   /** 關閉連線並通知其他人；可能被重複呼叫（主動踢除後又收到 close 事件），所以要冪等。 */
   private disconnect(ws: WebSocket, code: number, reason: string) {
+    let waiting = false;
     try {
+      waiting = !!attachment(ws).waiting;
       // 發話中斷線：照樣把已經錄到的部分轉成文字
       this.finishRecording(attachment(ws).id);
     } catch {
@@ -420,7 +569,8 @@ export class Channel extends DurableObject<Env> {
       // 已經關閉
     }
     // close() 之後 readyState 不再是 OPEN，sockets() 會自動排除它
-    this.broadcast({ t: 'members', members: this.members() });
+    if (waiting) this.sendKnocks();
+    else this.broadcast({ t: 'members', members: this.members() });
   }
 
   /** 找一個沒人用的連線編號（1 開始） */
@@ -516,8 +666,13 @@ export class Channel extends DurableObject<Env> {
     return this.transcripts.filter((e) => e.at >= cutoff && e.status !== 'pending' && e.status !== 'audio');
   }
 
+  /** 房間成員的連線（不含等待房主允許的人） */
   private sockets(): WebSocket[] {
-    return this.ctx.getWebSockets().filter((ws) => ws.readyState === OPEN);
+    return this.ctx.getWebSockets().filter((ws) => ws.readyState === OPEN && !attachment(ws).waiting);
+  }
+
+  private allSockets(): WebSocket[] {
+    return this.ctx.getWebSockets();
   }
 
   private members(): Member[] {
@@ -551,6 +706,15 @@ function toMember(a: Attachment): Member {
     talking: !!a.talking,
     ...(a.talking && a.talkId ? { talkId: a.talkId } : {}),
   };
+}
+
+/** 拒絕加入：先接受 WebSocket，送出原因後立刻用指定的 close code 關閉，讓 App 知道不要重連 */
+function refuse(msg: ServerMessage, code: number): Response {
+  const { 0: client, 1: server } = new WebSocketPair();
+  server.accept();
+  send(server, msg);
+  server.close(code, msg.t);
+  return new Response(null, { status: 101, webSocket: client });
 }
 
 async function sha256(text: string): Promise<string> {

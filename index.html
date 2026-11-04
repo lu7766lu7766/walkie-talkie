@@ -112,6 +112,7 @@
 
       <section class="stage">
         <p id="speaker-banner" class="status" data-state="offline" aria-live="polite">連線中…</p>
+        <div id="knock-list" class="knock-list" hidden></div>
         <div id="quick-mute" class="quick-mute" hidden></div>
 
         <div id="mic-tip" class="tip" hidden>
@@ -201,12 +202,13 @@
             <span>語音轉文字<small>開啟後說話內容會送 Cloudflare AI 轉成文字（使用每日額度）。關閉時通話紀錄只有時間與發話人，仍可重播</small></span>
             <input id="transcribe-toggle" type="checkbox" role="switch" class="switch" />
           </label>
-          <p class="hint">你是房主：可以修改房間名稱、開關語音轉文字、關閉別人的自動偵測，或禁言一直佔線的人（被禁言的人只能收聽）。</p>
+          <p class="hint">你是房主：可以修改房間名稱、開關語音轉文字、關閉別人的自動偵測、禁言一直佔線的人（被禁言的人只能收聽），或把人移出房間（被移出的人要再進來，必須經過你允許）。</p>
           <div class="host-buttons">
             <button id="all-vox-off" class="btn ghost small">全部關閉自動偵測</button>
             <button id="all-mute" class="btn ghost small">全部禁言</button>
             <button id="all-unmute" class="btn ghost small">全部解除禁言</button>
           </div>
+          <button id="close-room" class="btn danger small close-room">關閉房間（所有人移出）</button>
         </div>
         <ul id="members" class="member-list"></ul>
       </div>
@@ -304,6 +306,12 @@
       <div id="qr-large" class="qr-large"></div>
       <p>掃描加入房間 <strong id="qr-room"></strong></p>
       <p class="hint">點任意處關閉</p>
+    </dialog>
+
+    <dialog id="waiting-dialog" class="waiting-dialog" aria-labelledby="waiting-title">
+      <h2 id="waiting-title">等待房主允許</h2>
+      <p id="waiting-text"></p>
+      <button id="waiting-cancel" class="btn ghost">取消，回到大廳</button>
     </dialog>
 
     <div id="toast" class="toast" popover="manual" hidden></div>

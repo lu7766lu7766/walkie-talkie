@@ -1369,3 +1369,56 @@ kbd {
 .status-audio .transcript-meta {
   font-size: 13px;
 }
+
+/* 房主：關閉房間 */
+.close-room {
+  width: 100%;
+  margin-top: 12px;
+}
+
+/* 房主：被移出的人想回來 */
+.knock-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.knock {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--accent, #2a9d8f) 40%, transparent);
+}
+
+.knock span {
+  flex: 1 1 160px;
+}
+
+/* 被移出後重新進入：等房主允許 */
+.waiting-dialog {
+  max-width: min(360px, calc(100vw - 32px));
+  border: none;
+  border-radius: 20px;
+  padding: 24px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: center;
+}
+
+.waiting-dialog::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+
+.waiting-dialog h2 {
+  margin: 0 0 8px;
+  font-size: 1.1rem;
+}
+
+.waiting-dialog .btn {
+  margin-top: 12px;
+  width: 100%;
+}

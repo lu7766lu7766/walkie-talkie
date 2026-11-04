@@ -1,4 +1,4 @@
-import { MAX_SPEAKERS, MAX_TALK_MS, RELAY_HEADER_BYTES, type Member, type ModAction, type ServerMessage } from '../shared/protocol';
+import { MAX_SPEAKERS, MAX_TALK_MS, RELAY_HEADER_BYTES, type Knock, type Member, type ModAction, type ServerMessage } from '../shared/protocol';
 import type { AudioEngine, NoiseOptions } from './audio-engine';
 import { Connection } from './connection';
 import { $, listen, setLevel, toast, vibrate } from './dom';
@@ -18,7 +18,7 @@ import { hostKeyFor } from './host-key';
 import { API_ORIGIN, roomIdFor, roomLabel, roomUrl } from './room-id';
 import { clientId, saveSettings, settings, type Mode } from './settings';
 import { ClipStore } from './clips';
-import { touchRoom } from './my-rooms';
+import { forgetRoom, touchRoom } from './my-rooms';
 import { renderQr } from './qr';
 import { TranscriptLog } from './transcript';
 import { VoiceDetector } from './vad';
@@ -65,6 +65,12 @@ export class Room implements PttHandlers {
   private topic = '';
   /** 房主是否開啟語音轉文字 */
   private transcribeOn = true;
+  /** 房主：被移出後想回來、正在等你允許的人 */
+  private knocks: Knock[] = [];
+  /** 自己之前被移出，正在等房主允許回到房間 */
+  private waiting = false;
+  /** 房主自己按了關閉房間 */
+  private closingRoom = false;
   private talk: TalkState = 'idle';
   private pending: ArrayBuffer[] = [];
   private held = new Set<TalkSource>();
@@ -147,6 +153,9 @@ export class Room implements PttHandlers {
         this.members = this.members.map((m) => ({ ...m, talking: false }));
         this.resetTalk();
         if (reason === 'replaced') this.leave('你在另一個分頁或裝置進入了同一個房間。');
+        // 通常先收到 kicked／closed 訊息（含房主暱稱）就已經離開了，這裡是沒收到訊息時的備援
+        else if (reason === 'kicked') this.onKicked('');
+        else if (reason === 'closed') this.onRoomClosed('');
         else this.render();
       },
       onMessage: (msg) => this.onMessage(msg),
@@ -177,6 +186,11 @@ export class Room implements PttHandlers {
       listen($('all-vox-off'), 'click', () => this.moderate('vox-off', '*')),
       listen($('all-mute'), 'click', () => this.moderate('mute', '*')),
       listen($('all-unmute'), 'click', () => this.moderate('unmute', '*')),
+      listen($('knock-list'), 'click', (e) => this.onKnockAction(e)),
+      listen($('waiting-cancel'), 'click', () => this.leave()),
+      // 等待中不能用 Esc 關掉視窗（要回大廳請按取消）
+      listen($('waiting-dialog'), 'cancel', (e) => e.preventDefault()),
+      listen($('close-room'), 'click', () => this.closeRoom()),
       listen($('quick-mute'), 'click', (e) => this.onMemberAction(e)),
       listen($('transcribe-toggle'), 'change', () => {
         if (this.isHost) this.conn.send({ t: 'transcribe', on: $<HTMLInputElement>('transcribe-toggle').checked });
@@ -445,6 +459,25 @@ export class Room implements PttHandlers {
       case 'moderated':
         this.onModerated(msg.action, msg.by);
         break;
+      case 'kicked':
+        this.onKicked(msg.by);
+        break;
+      case 'closed':
+        this.onRoomClosed(msg.by);
+        break;
+      case 'waiting':
+        this.showWaiting(msg.hostHere);
+        break;
+      case 'admitted':
+        // 伺服器接著關掉這條連線，Connection 會馬上重連並正式進入房間
+        this.waiting = false;
+        $<HTMLDialogElement>('waiting-dialog').close();
+        toast('房主允許你回到房間了');
+        vibrate([80]);
+        break;
+      case 'knocks':
+        this.setKnocks(msg.list);
+        break;
       case 'denied':
       case 'revoked': {
         if (msg.t === 'denied' && this.talk !== 'requesting') return;
@@ -635,6 +668,7 @@ export class Room implements PttHandlers {
           actions.className = 'member-actions';
           if (m.vox) actions.append(actionButton('關閉自動偵測', 'vox-off', m.id));
           actions.append(m.muted ? actionButton('解除禁言', 'unmute', m.id) : actionButton('禁言', 'mute', m.id, true));
+          actions.append(actionButton('移出', 'kick', m.id, true));
           li.append(actions);
         }
         return li;
@@ -644,7 +678,79 @@ export class Room implements PttHandlers {
 
   private onMemberAction(e: Event) {
     const button = (e.target as Element).closest<HTMLButtonElement>('button[data-action]');
-    if (button) this.moderate(button.dataset.action as ModAction, button.dataset.id!);
+    if (!button) return;
+    const action = button.dataset.action as ModAction;
+    const id = button.dataset.id!;
+    if (action === 'kick') {
+      const name = this.members.find((m) => m.id === id)?.name ?? '這個人';
+      if (!confirm(`把 ${name} 移出房間？\n對方會被退出房間、麥克風關閉；之後要再進來必須經過你允許。`)) return;
+      toast(`已將 ${name} 移出房間`);
+    }
+    this.moderate(action, id);
+  }
+
+  /** 房主關閉房間：所有人移出，之後這個連結不能再進入 */
+  private closeRoom() {
+    if (!this.isHost) return;
+    if (!confirm('關閉房間？\n所有人都會被移出、麥克風關閉，之後這個房間的連結就不能再進入。')) return;
+    this.closingRoom = true;
+    this.conn.send({ t: 'close-room' });
+  }
+
+  /** 被房主移出（或等待時被拒絕）：退出房間並完全釋放麥克風（main.ts 的 onLeave） */
+  private onKicked(by: string) {
+    vibrate([80, 60, 80]);
+    if (this.waiting) this.leave(by ? `房主 ${by} 沒有允許你回到房間。` : '房主沒有允許你回到房間。');
+    else this.leave(by ? `你已被房主 ${by} 移出房間。` : '你已被房主移出這個房間。');
+  }
+
+  /** 之前被移出、這次重新進入：等房主允許 */
+  private showWaiting(hostHere: boolean) {
+    this.waiting = true;
+    this.resetTalk();
+    $('waiting-text').textContent = hostHere
+      ? '你之前被房主移出這個房間，要回來需要房主允許。已經通知房主，請稍候…'
+      : '你之前被房主移出這個房間，要回來需要房主允許。房主現在不在房間，等房主回來才會看到你的請求。';
+    const dialog = $<HTMLDialogElement>('waiting-dialog');
+    if (!dialog.open) dialog.showModal();
+    this.render();
+  }
+
+  /** 房主：更新等待允許的名單，有新的人就提醒 */
+  private setKnocks(list: Knock[]) {
+    const fresh = list.filter((k) => !this.knocks.some((old) => old.id === k.id));
+    this.knocks = list;
+    if (fresh.length) {
+      this.engine.incoming();
+      vibrate([60, 60, 60]);
+      toast(`${fresh.map((k) => k.name).join('、')} 想回到房間`);
+    }
+    const box = $('knock-list');
+    box.hidden = !list.length;
+    box.replaceChildren(
+      ...list.map((k) => {
+        const row = document.createElement('div');
+        row.className = 'knock';
+        const text = document.createElement('span');
+        text.textContent = `${k.name} 之前被移出，想回到房間`;
+        row.append(text, knockButton('允許', k.id, true), knockButton('拒絕', k.id, false));
+        return row;
+      }),
+    );
+  }
+
+  private onKnockAction(e: Event) {
+    const button = (e.target as Element).closest<HTMLButtonElement>('button[data-knock]');
+    if (!button || !this.isHost) return;
+    this.conn.send({ t: 'admit', id: button.dataset.knock!, allow: button.dataset.allow === '1' });
+  }
+
+  /** 房間被關閉：所有人退出並完全釋放麥克風；房主自己也從「我開的房間」移除 */
+  private onRoomClosed(by: string) {
+    forgetRoom(this.code);
+    if (this.closingRoom) return this.leave('房間已關閉，所有人都已移出。');
+    vibrate([80, 60, 80]);
+    this.leave(by ? `房主 ${by} 已關閉房間。` : '這個房間已被房主關閉，無法再進入。');
   }
 
   private moderate(action: ModAction, target: string) {
@@ -922,6 +1028,16 @@ function withoutSlot(bytes: Uint8Array): ArrayBuffer {
   out[0] = bytes[0];
   out.set(bytes.subarray(RELAY_HEADER_BYTES), 1);
   return out.buffer;
+}
+
+function knockButton(text: string, id: string, allow: boolean) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `btn small ${allow ? 'primary' : 'ghost'}`;
+  button.textContent = text;
+  button.dataset.knock = id;
+  button.dataset.allow = allow ? '1' : '0';
+  return button;
 }
 
 function actionButton(text: string, action: ModAction, id: string, danger = false) {

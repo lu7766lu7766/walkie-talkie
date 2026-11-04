@@ -1,4 +1,14 @@
-import { CLOSE_REPLACED, type ClientMessage, type ServerMessage } from '../shared/protocol';
+import { CLOSE_ADMITTED, CLOSE_KICKED, CLOSE_REPLACED, CLOSE_ROOM_CLOSED, type ClientMessage, type ServerMessage } from '../shared/protocol';
+
+/** 連線結束的原因：retrying 會自動重連，admitted（房主允許回到房間）馬上重連，其他不重連 */
+export type CloseReason = 'retrying' | 'admitted' | 'replaced' | 'kicked' | 'closed';
+
+const CLOSE_REASONS: Record<number, CloseReason> = {
+  [CLOSE_REPLACED]: 'replaced',
+  [CLOSE_KICKED]: 'kicked',
+  [CLOSE_ROOM_CLOSED]: 'closed',
+  [CLOSE_ADMITTED]: 'admitted',
+};
 
 const PING_INTERVAL_MS = 15_000;
 /** 送出 ping 後這麼久沒收到任何東西就當作斷線，主動重連 */
@@ -9,7 +19,7 @@ const MAX_BUFFERED_BYTES = 64 * 1024;
 
 export interface ConnectionHandlers {
   onOpen(): void;
-  onClose(reason: 'retrying' | 'replaced'): void;
+  onClose(reason: CloseReason): void;
   onMessage(msg: ServerMessage): void;
   onAudio(frame: ArrayBuffer): void;
 }
@@ -65,7 +75,7 @@ export class Connection {
       if (typeof e.data !== 'string') this.h.onAudio(e.data);
       else if (e.data !== 'pong') this.h.onMessage(JSON.parse(e.data));
     };
-    ws.onclose = (e) => this.drop(e.code === CLOSE_REPLACED ? 'replaced' : 'retrying');
+    ws.onclose = (e) => this.drop(CLOSE_REASONS[e.code] ?? 'retrying');
   }
 
   send(msg: ClientMessage) {
@@ -85,7 +95,7 @@ export class Connection {
     this.ws?.close(1000);
   }
 
-  private drop(reason: 'retrying' | 'replaced') {
+  private drop(reason: CloseReason) {
     const ws = this.ws;
     if (!ws) return;
     this.ws = undefined;
@@ -98,7 +108,12 @@ export class Connection {
     }
     if (this.stopped) return;
     this.h.onClose(reason);
-    if (reason === 'replaced') return;
+    if (reason === 'admitted') {
+      this.attempt = 0;
+      this.connect();
+      return;
+    }
+    if (reason !== 'retrying') return;
     const delay = Math.min(MAX_BACKOFF_MS, 500 * 2 ** this.attempt++);
     this.retryTimer = setTimeout(() => this.connect(), delay);
   }
